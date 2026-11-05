@@ -1,6 +1,8 @@
 name: Build Windows desktop app and publish auto-update release
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
