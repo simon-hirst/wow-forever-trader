@@ -8,6 +8,6 @@ ForeverTraderBridge.lua
 Link.lua
 Market.lua
 Plan.lua
-Aux.lua
+SniperAdapter.lua
 Snipe.lua
 Main.lua
