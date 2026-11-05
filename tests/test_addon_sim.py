@@ -516,6 +516,17 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(self.sim.bought()[0]['id'], HATCHET)
         self.assertEqual(self.sim.violations(), [])
 
+    def test_browse_cache_invalidation_safely_disables_incremental_search(self):
+        self._set_paged_market()
+        self.sim.g['__ah'].invalidateBrowseOnSearch = True
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: not self.ns.Aux.PagesOn(), timeout=12))
+        self.assertEqual(self.ns.Aux.stats.earlyChecks, 1)
+        self.assertEqual(self.ns.Market.rounds, 0)
+        self.assertEqual(self.sim.bought(), [])
+        self.assertIn('fallback', self.ns.Aux.PreviewStats())
+
     def test_disabling_incremental_pages_waits_for_entire_browse(self):
         self._set_paged_market()
         self.ns.Settings().pages = False
