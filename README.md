@@ -12,6 +12,10 @@ the server throttle cannot be safely removed by this addon.
   completed rounds instead of auxForever's original 2.5 seconds. The existing
   auction-house request throttle is still enforced by auxForever.
 - `/ft speed fast|normal|safe` selects 0.35s, 2.5s or 6s pauses.
+- **Vendor-only speed fix:** `/ft bets off` now also suppresses auxForever's
+  speculative-price and unaffordable candidate verifications. Previously it only
+  hid these deals from the confirmation button, wasting server requests in the
+  verification phase. The 14.4s baseline needs to be remeasured in-game.
 - New below-vendor candidates are ranked by potential immediate vendor profit
   *before* auxForever opens their individual auctions. They still undergo auxForever's
   original price and availability checks; a browse minimum might be bid-only.
