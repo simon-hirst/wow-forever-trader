@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 import pathlib, tempfile, unittest, sqlite3, sys
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 from trader.market import MarketStore
@@ -11,8 +12,8 @@ def snapshot(when,price,count=1):
 
 class TestDistinctScans(unittest.TestCase):
     def test_same_timestamp_updates_price_without_manufacturing_scan(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store=MarketStore(pathlib.Path(tmp))
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as resources:
+            store=resources.enter_context(MarketStore(pathlib.Path(tmp)))
             self.assertTrue(store.ingest(snapshot(T0,599,24),'file1'))
             self.assertTrue(store.ingest(snapshot(T1,205,38),'file2'))
             self.assertTrue(store.ingest(snapshot(T1,180,51),'file3'))
@@ -23,12 +24,12 @@ class TestDistinctScans(unittest.TestCase):
             self.assertEqual(rows[0]['history'],1)
             self.assertEqual(rows[0]['signal'],'WATCH')
             self.assertFalse(store.ingest(snapshot(T1,180,51),'file4'))
-            store.db.close()
+            store.close()
 
     def test_old_db_duplicate_scans_repaired_without_losing_trades_or_books(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as resources:
             path=pathlib.Path(tmp)
-            store=MarketStore(path)
+            store=resources.enter_context(MarketStore(path))
             store.ingest(snapshot(T0,599,24),'file1')
             store.ingest(snapshot(T1,180,51),'file2')
             store.log_trade('BUY','954',1,180)
@@ -44,8 +45,8 @@ class TestDistinctScans(unittest.TestCase):
             idx=store.db.execute('SELECT MAX(id) FROM scans').fetchone()[0]
             store.db.execute('INSERT INTO observations VALUES(?,?,?,?)',(idx,'954',150,55))
             store.db.commit()
-            store.db.close()
-            reopened=MarketStore(path)
+            store.close()
+            reopened=resources.enter_context(MarketStore(path))
             self.assertEqual(reopened.count_scans(),2)
             self.assertEqual(reopened.market_rows()[0]['price'],150)
             self.assertEqual(reopened.transactions()[0][2],'BUY')
