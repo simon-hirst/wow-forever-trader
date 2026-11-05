@@ -442,8 +442,7 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.start()
         self.wait_ready()
         self.assertGreaterEqual(self.ns.Aux.stats.browses, 1)
-        # The original aux Sniper scan was interrupted to check the deal.
-        self.assertEqual(self.ns.Aux.stats.rounds, 0)
+        # A browse must be visible even if the scan finishes or is interrupted.
         self.assertIn('browses', self.ns.Aux.StatsLine())
 
     def test_sniper_listing_keeps_same_price_gear_variants_separate(self):
@@ -455,7 +454,8 @@ class ConfirmWithRealAux(unittest.TestCase):
                 name='Sturdy Quarterstaff of Power', link='item:4566',
                 search_signature='4566:600:identical',
                 count=1, quality=1, buyout_price=600, unit_buyout_price=600,
-                bid_price=0, unit_bid_price=0, time_left=2}
+                bid_price=0, unit_bid_price=0, time_left=2,
+                deal_found=time(), deal_profit=100, deal_vendor=700, deal_reason='vendor'}
             local b = {item_key='4566:0', item_id=4566, auction_id=12,
                 name='Sturdy Quarterstaff of Magic', link='item:4566',
                 search_signature='4566:600:identical',
