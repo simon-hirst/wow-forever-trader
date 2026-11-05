@@ -349,6 +349,37 @@ local function browseRows()
     return rows
 end
 
+-- A paginated browse simulator. The real realm sends one result page at a
+-- time; item searches can be interleaved only after a page response.
+-- Default pageSize=0 keeps the pre-existing one-response tests unchanged.
+local function filteredBrowseRows()
+    local rows, q = browseRows(), __ah.browseQuery
+    if q and q.searchString and q.searchString ~= '' then
+        local filtered = {}
+        for _, r in ipairs(rows) do
+            local item = __items[r.itemKey.itemID]
+            if item and string.lower(item.name) == string.lower(q.searchString) then
+                filtered[#filtered + 1] = r
+            end
+        end
+        rows = filtered
+    end
+    table.sort(rows, function(a, b)
+        if a.minPrice == b.minPrice then return a.itemKey.itemID < b.itemKey.itemID end
+        return a.minPrice < b.minPrice
+    end)
+    return rows
+end
+
+local function browseVisibleRows()
+    local rows = filteredBrowseRows()
+    if (__ah.browsePageSize or 0) <= 0 then return rows end
+    local visible = (__ah.browsePageIndex or 0) * __ah.browsePageSize
+    local out = {}
+    for i = 1, math.min(visible, #rows) do out[#out + 1] = rows[i] end
+    return out
+end
+
 C_AuctionHouse = {
     IsThrottledMessageSystemReady = function() return true end,
     SupportsCopperValues = function() return true end,
@@ -356,24 +387,25 @@ C_AuctionHouse = {
     GetNumOwnedAuctions = function() return 0 end, GetNumBids = function() return 0 end,
     SendBrowseQuery = function(query)
         __ah.browseQuery = query
+        __ah.browsePageIndex = 0
         __ah_log[#__ah_log + 1] = 'browse'
-        later(__ah.latency, function() __fire('AUCTION_HOUSE_BROWSE_RESULTS_UPDATED') end)
+        later(__ah.browseLatency or __ah.latency, function()
+            __ah.browsePageIndex = 1
+            __fire('AUCTION_HOUSE_BROWSE_RESULTS_UPDATED')
+        end)
     end,
-    HasFullBrowseResults = function() return true end,
-    RequestMoreBrowseResults = noop,
-    GetBrowseResults = function()
-        local rows = browseRows()
-        local q = __ah.browseQuery
-        if q and q.searchString and q.searchString ~= '' then
-            local out = {}
-            for _, r in ipairs(rows) do
-                local i = __items[r.itemKey.itemID]
-                if i and string.lower(i.name) == string.lower(q.searchString) then out[#out + 1] = r end
-            end
-            return out
-        end
-        return rows
+    HasFullBrowseResults = function()
+        if (__ah.browsePageSize or 0) <= 0 then return true end
+        return (__ah.browsePageIndex or 0) * __ah.browsePageSize >= #filteredBrowseRows()
     end,
+    RequestMoreBrowseResults = function()
+        __ah_log[#__ah_log + 1] = 'browse_more'
+        later(__ah.browseLatency or __ah.latency, function()
+            __ah.browsePageIndex = (__ah.browsePageIndex or 0) + 1
+            __fire('AUCTION_HOUSE_BROWSE_RESULTS_ADDED')
+        end)
+    end,
+    GetBrowseResults = browseVisibleRows,
     GetItemKeyInfo = function(key)
         local i = __items[key.itemID]
         if not i then return nil end
