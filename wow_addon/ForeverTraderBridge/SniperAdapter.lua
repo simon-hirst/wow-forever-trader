@@ -61,7 +61,7 @@ local function earlyPotential(row, now)
     if prev and prev.price == price and prev.qty == qty
         and now - prev.at < EARLY_RECHECK_SECONDS then return end
     local name, quality, vendor
-    local ok, a, _, c, _, _, _, _, _, _, v = pcall(NS.GetItemInfo, id)
+    local ok, a, _, c, _, _, _, _, _, _, _, v = pcall(NS.GetItemInfo, id)
     if ok then name, quality, vendor = a, c, v end
     if not name or not quality or quality <= 0 or not vendor or vendor <= price then return end
     local profit = vendor - price
@@ -287,7 +287,7 @@ local function installHooks(env)
     if type(originalRequest) == 'function' then
         scanEnvironment.request = function(send, events, match, cached)
             local answer = originalRequest(send, events, match, cached)
-            if answer and not earlyInProgress and type(events) == 'table' then
+            if answer and answer ~= 'AUCTION_HOUSE_BROWSE_FAILURE' and not earlyInProgress and type(events) == 'table' then
                 for _, event in ipairs(events) do
                     if event == 'AUCTION_HOUSE_BROWSE_RESULTS_UPDATED' or
                         event == 'AUCTION_HOUSE_BROWSE_RESULTS_ADDED' then
