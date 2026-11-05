@@ -54,7 +54,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_state.outputs.tag }}
-        with:
           files: |
             dist/ForeverTrader.exe
             dist/ForeverTrader.exe.sha256
