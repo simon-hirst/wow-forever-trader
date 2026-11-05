@@ -473,6 +473,7 @@ class ConfirmWithRealAux(unittest.TestCase):
 
     def test_vendor_only_skips_usual_deals_before_individual_verification(self):
         self.start()
+        self.sim.run(1)  # the adapter attaches 0.3s after AH opens
         judge = self.ns.Aux.env.judge
         self.ns.Settings().bets = False
         self.assertIsNone(judge(10, 100, 0, 3, 60, 1))
@@ -482,6 +483,7 @@ class ConfirmWithRealAux(unittest.TestCase):
 
     def test_vendor_only_skips_unaffordable_browse_minimum(self):
         self.start()
+        self.sim.run(1)  # wait for the scheduled adapter attachment
         self.ns.Settings().bets = False
         self.ns.Settings().reserve = 99800   # only 2s free
         judge = self.ns.Aux.env.judge
