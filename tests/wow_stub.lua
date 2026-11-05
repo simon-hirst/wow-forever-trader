@@ -416,6 +416,7 @@ C_AuctionHouse = {
     GetItemKeyRequiredLevel = function() return 1 end,
     SendSearchQuery = function(key)
         __ah_log[#__ah_log + 1] = 'search:' .. key.itemID
+        if __ah.invalidateBrowseOnSearch then __ah.browsePageIndex = 0 end
         later(__ah.latency, function()
             if (__items[key.itemID].stack or 1) > 1 then
                 __fire('COMMODITY_SEARCH_RESULTS_UPDATED', key.itemID)
