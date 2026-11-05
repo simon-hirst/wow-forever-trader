@@ -5,7 +5,7 @@ from pathlib import Path
 from .auctionator import fmt_copper
 from .seed_names import SEED_NAMES
 from .orderbook import assess
-from . import marketdata
+from . import marketdata, performance
 
 class MarketStore:
     def __init__(self, directory: Path):
@@ -56,6 +56,7 @@ class MarketStore:
         self.db.executemany('INSERT OR IGNORE INTO names (item_id,name) VALUES (?,?)', SEED_NAMES.items())
         self.db.commit()
         marketdata.ensure_schema(self.db)
+        performance.ensure_schema(self.db)
         self._repair_duplicate_scan_timestamps()
 
     def close(self):
@@ -318,6 +319,19 @@ class MarketStore:
             self._apply_confirmed_auto(dict(uid=str(uid),ts=row[1],kind=row[2],
                 item_id=item_id,qty=qty,total=total,note=row[4]+' [USER VERIFIED]'))
 
+    def ingest_snipe_metrics(self,payload):
+        """Idempotent live-link and SavedVariables import; never implies a purchase."""
+        count=0
+        for raw in payload.get('snipe_metrics',[]):
+            count+=performance.ingest(self.db,raw)
+        return count
+
+    def sniper_performance(self):
+        return performance.summary(self.db)
+
+    def recent_snipe_attempts(self,limit=300):
+        return performance.attempts(self.db,limit)
+
     def latest_wallet(self):
         return self.db.execute('SELECT character,copper,seen_at FROM wallets ORDER BY seen_at DESC LIMIT 1').fetchone()
 
@@ -374,13 +388,17 @@ class MarketStore:
             'automatic_events_count':self.db.execute('SELECT COUNT(*) FROM automatic_events').fetchone()[0],
             'automatic_events_unverified':self.review_count(),
             'wallet_change_events_count':self.db.execute('SELECT COUNT(*) FROM wallet_changes').fetchone()[0],
-            'market_item_count':len(rows),'orderbooks_recorded':len(self.order_book_rows()),'market_movers_over_20pct':sum(1 for r in rows if r['change'] is not None and abs(r['change'])>=20),'ledger':self.ledger(),
+            'sniper_performance':self.sniper_performance(),
+             'market_item_count':len(rows),'orderbooks_recorded':len(self.order_book_rows()),'market_movers_over_20pct':sum(1 for r in rows if r['change'] is not None and abs(r['change'])>=20),'ledger':self.ledger(),
             'watchlist': [{'item_id':item,'target_copper':target,'notes':notes} for item,(target,notes) in self.watchlist().items()],
             'caveats':['Prices are auction-house minimum observed buyout, not confirmed filled trades.',
                       'Single scan cannot establish fair value or liquidity.',
                       'History from this PC is not proof an auction sold.',
                       'Auto-recorded receipts only enter the profit ledger when supported by matching evidence or user verification.',
                       'Previously completed flips are NOT reconstructed; wallet includes other money changes.',
+                      'Sniper outcomes represent addon-mediated purchase attempts, not all auction-house listings or other traders.',
+                      'Verified vendor P&L matches confirmed AH buys and vendor sells by character/item; unverified or unmatched sales do not count.',
+                      'Profit per active hour is an estimate based on observed attempts, not an in-game session timer.',
                       'Vendor sales have no AH commission; ambiguous events never silently affect the ledger.',
                       'SavedVariable writes happen on /reload/logout; file monitoring is not continuous API polling.',
                       'Order-book price gaps are hypothetical offers, not confirmed buyer demand or realised returns.',
@@ -409,6 +427,11 @@ class MarketStore:
         automatic=io.StringIO();aw=csv.writer(automatic)
         aw.writerow(['event_uid','time','character','kind','item_name','quantity','total_copper','status','reason'])
         aw.writerows(self.automatic_events(limit=2000))
+        sniper_csv=io.StringIO();sp=csv.writer(sniper_csv)
+        sp.writerow(['attempt_uid','timestamp_utc','character','item_id','item_name','outcome','quantity',
+                     'cost_copper','estimated_profit_copper','early_page','page_to_ready_ms',
+                     'page_to_finish_ms','offer_to_ready_ms','offer_to_finish_ms','reason','source'])
+        sp.writerows(self.recent_snipe_attempts(limit=100000))
         wallets_csv=io.StringIO();ww=csv.writer(wallets_csv)
         ww.writerow(['character','wallet_copper','last_saved_at_utc'])
         ww.writerows(self.db.execute('SELECT character,copper,seen_at FROM wallets ORDER BY seen_at DESC'))
@@ -441,6 +464,7 @@ class MarketStore:
                     if path.is_file():z.write(path,name)
             z.writestr('wallet_changes.csv',changes_csv.getvalue())
             z.writestr('automatic_activity.csv',automatic.getvalue())
+            z.writestr('sniper_attempts.csv',sniper_csv.getvalue())
             z.writestr('wallet_checkpoints.csv',wallets_csv.getvalue())
             z.writestr('order_books.csv',orderbooks.getvalue())
             z.writestr('market_movers.csv',movers.getvalue())

@@ -159,6 +159,14 @@ def parse_bridge(path: Path) -> dict:
             changes.append(dict(uid=uid,character=character,ts=ts,
                                 copper=copper,delta=delta,context=context))
         except (TypeError,ValueError,OverflowError):continue
+    # Completed Sniper attempts are immutable and re-import safely on /reload.
+    from . import performance
+    snipe_metrics=[]
+    for _,raw in sorted((table.get('snipe_metrics') or {}).items(),
+                        key=lambda pair: int(pair[0]) if str(pair[0]).isdigit() else 999999):
+        if not isinstance(raw,dict):continue
+        try:snipe_metrics.append(performance.normalise(raw))
+        except (ValueError,TypeError,OverflowError):continue
     bars=[]
     for _,raw in (table.get('bars') or {}).items():
         if isinstance(raw,dict) and isinstance(raw.get('t'),int) and isinstance(raw.get('d'),str):
@@ -168,5 +176,5 @@ def parse_bridge(path: Path) -> dict:
         if isinstance(raw,dict) and isinstance(raw.get('ts'),int) and isinstance(raw.get('data'),str):
             snapshots.append((raw['ts'],raw['data']))
     return {'books':books,'count':len(books),'market':str(table.get('market') or 'PvP'),
-            'activity':activity,'wallets':wallets,'wallet_changes':changes,'bars':bars,'snapshots':snapshots,
+            'activity':activity,'wallets':wallets,'wallet_changes':changes,'snipe_metrics':snipe_metrics,'bars':bars,'snapshots':snapshots,
             'log':[str(v) for _,v in sorted((table.get('log') or {}).items()) if isinstance(v,str)]}

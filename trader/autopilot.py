@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import link as link_protocol
 from . import marketdata as md
-from . import strategy
+from . import strategy, performance
 from .market import MarketStore
 
 ANALYSE_EVERY_SECONDS = 180
@@ -110,7 +110,15 @@ class Autopilot(threading.Thread):
                 for snapshot in self.assembler.add_end(frame.payload, now):
                     self._store_snapshot(store, snapshot)
             elif frame.type == link_protocol.TYPE_LOG:
-                self._log('addon: ' + frame.payload.decode('utf-8', 'replace'))
+                message=frame.payload.decode('utf-8','replace')
+                if message.startswith(performance.PREFIX):
+                    try:
+                        row=performance.parse_log_line(message)
+                        store.ingest_snipe_metrics({'snipe_metrics':[row]})
+                    except (ValueError,TypeError,OverflowError) as exc:
+                        self._log('invalid sniper telemetry: '+str(exc))
+                else:
+                    self._log('addon: '+message)
             elif frame.type == link_protocol.TYPE_TEST:
                 index, pos = link_protocol.read_varint(frame.payload, 0)
                 count, _ = link_protocol.read_varint(frame.payload, pos)
@@ -126,7 +134,8 @@ class Autopilot(threading.Thread):
     def _data_marker(self, store: MarketStore) -> tuple:
         db = store.db
         return (db.execute('SELECT MAX(ts) FROM snapshots').fetchone()[0], db.execute('SELECT MAX(ts) FROM bars').fetchone()[0],
-                db.execute('SELECT COUNT(*) FROM automatic_events').fetchone()[0], db.execute('SELECT MAX(rev) FROM plan_runs').fetchone()[0])
+                db.execute('SELECT COUNT(*) FROM automatic_events').fetchone()[0], db.execute('SELECT MAX(rev) FROM plan_runs').fetchone()[0],
+                db.execute('SELECT MAX(rowid) FROM snipe_attempts').fetchone()[0])
 
     def run(self):
         store = MarketStore(self.data_dir)
