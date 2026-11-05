@@ -53,6 +53,17 @@ class MarketStore:
         self.db.commit()
         self._repair_duplicate_scan_timestamps()
 
+    def close(self):
+        """Release SQLite file handles (required before deleting a database on Windows)."""
+        self.db.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
     def _repair_duplicate_scan_timestamps(self):
         """Keep the latest revision of each independent Auctionator full-scan time.
 
