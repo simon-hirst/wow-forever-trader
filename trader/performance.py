@@ -113,14 +113,14 @@ def attempts(db, limit=300):
     """, (limit,)).fetchall()
 
 
-def confirmed_vendor_pnl(db):
+def confirmed_vendor_pnl(db, since=None):
     """Match FIFO *within character and item*; never assume a wallet delta is a sale.
 
     Unmatched sells don't count as profit. A buy lot's exact total is allocated
     proportionally on partial sales so rounding copper cannot create extra money.
     """
     rows = db.execute("""
-        SELECT character,kind,item_id,qty,total
+        SELECT time,character,kind,item_id,qty,total
         FROM automatic_events
         WHERE status='confirmed' AND kind IN ('AH_BUY','VENDOR_SELL')
           AND CAST(item_id AS INTEGER)>0 AND qty>0 AND total>0
@@ -129,7 +129,7 @@ def confirmed_vendor_pnl(db):
     holdings = defaultdict(deque)
     realised = matched_qty = unmatched_qty = 0
     buy_receipts = sale_receipts = 0
-    for char, kind, item, qty, total in rows:
+    for ts, char, kind, item, qty, total in rows:
         key = (char, str(item))
         if kind == "AH_BUY":
             holdings[key].append([int(qty), int(total)])
@@ -149,9 +149,11 @@ def confirmed_vendor_pnl(db):
             lot[0] -= matched
             lot[1] -= allocated
             remaining -= matched
-            matched_qty += matched
-            realised += revenue - allocated
-        unmatched_qty += remaining
+            if since is None or ts >= since:
+                matched_qty += matched
+                realised += revenue - allocated
+        if since is None or ts >= since:
+            unmatched_qty += remaining
     return dict(realised=realised, matched_qty=matched_qty, unmatched_qty=unmatched_qty,
                 confirmed_buys=buy_receipts, confirmed_sales=sale_receipts,
                 open_units=sum(lot[0] for q in holdings.values() for lot in q))
@@ -182,7 +184,8 @@ def summary(db, now=None):
     active = _active_seconds([r[0] for r in rows])
     # This rate is an approximation until activity is reconciled with all
     # saved vendor receipts. The dashboard labels it as such.
-    hourly = (pnl["realised"] * 3600 / active) if active >= 600 else None
+    recent_pnl = confirmed_vendor_pnl(db, since=rows[0][0]) if rows else None
+    hourly = (recent_pnl["realised"] * 3600 / active) if active >= 600 and recent_pnl else None
     return dict(attempts=len(rows), bought=counts["BOUGHT"], lost=counts["LOST"],
                 expired=counts["EXPIRED"], skipped=counts["SKIPPED"],
                 cancelled=counts["CANCELLED"],

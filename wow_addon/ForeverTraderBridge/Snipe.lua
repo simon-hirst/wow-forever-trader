@@ -103,7 +103,7 @@ local function startAttempt(deal)
     end
     local character = tostring(UnitName('player') or 'Unknown') .. '-' ..
         tostring((GetRealmName and GetRealmName()) or 'PvP')
-    character = string.gsub(character, '[|\\n\\r]', '_')
+    character = string.gsub(character, '|', '_')
     S.perf = {uid = character .. ':' .. tostring(seq), character = character,
         item_id = deal.item_id or 0, offerAt = GetTime(),
         pageAt = deal.ft_first_page_at, early = deal.ft_incremental == true,
