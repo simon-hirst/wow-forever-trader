@@ -9,6 +9,7 @@ local DEFAULTS = {
     reserve = 500,      -- copper never spent
     spec = 0.25,        -- share of free cash for one bet that is not below vendor price
     speed = 'fast',     -- 0.35s cooldown; aux still obeys the game's request throttle
+    pages = true,       -- experimental: examine high-value vendor deals between browse pages
 }
 -- The Windows Confirm button relays exactly one press of this key per click. Measured live
 -- (2026-11-05): the game ignores F13-F24 entirely, but takes a posted numpad divide, which
@@ -223,6 +224,16 @@ SlashCmdList.FOREVERTRADER = function(input)
         diagnostics()
     elseif command == 'scanstats' then
         say(NS.Aux.StatsLine())
+    elseif command == 'pagestats' then
+        say(NS.Aux.PreviewStats())
+    elseif command == 'pages' then
+        if rest == 'on' or rest == 'off' then
+            NS.Aux.SetPages(rest == 'on')
+            say('incremental pages: ' .. (NS.Aux.PagesOn() and 'on' or 'off') ..
+                ' (server throttle unchanged; /ft pagestats shows early checks)')
+        else
+            say('usage: /ft pages on|off')
+        end
     elseif command == 'speed' then
         if NS.Aux.SetSpeed(rest) then
             say('scan cooldown: ' .. NS.Aux.Speed() ..
@@ -265,6 +276,6 @@ SlashCmdList.FOREVERTRADER = function(input)
     elseif command == 'log' then
         for _, line in ipairs((ForeverTraderBridgeDB and ForeverTraderBridgeDB.log) or {}) do print(line) end
     else
-        say('/ft diag | scanstats | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
+        say('/ft diag | scanstats | pagestats | pages on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
     end
 end
