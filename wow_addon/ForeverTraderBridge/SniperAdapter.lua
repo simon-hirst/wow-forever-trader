@@ -211,8 +211,20 @@ local function installHooks(env)
         judging = NS.Plan.For(itemID)
         return itemFacts(key, itemID)
     end
+    -- "bets off" previously filtered only the Confirm button, while auxForever
+    -- still opened every usual-price/plan candidate. Each live item check costs
+    -- another server request (14.4s on a five-priority browse). In vendor-only
+    -- mode, skip those checks BEFORE opening auctions, and reject unaffordable
+    -- minima. The cheapest browse price is not necessarily a buyout, so aux's
+    -- normal live recheck remains mandatory for every approved candidate.
     env.judge = function(price, usual, vendor, days, percent, minProfit)
         local reason, profit, pct = judge(price, usual, vendor, days, percent, minProfit)
+        if not NS.Settings().bets then
+            if reason ~= 'vendor' then return nil end
+            local free = GetMoney() - (NS.Plan.reserve or NS.Settings().reserve or 0)
+            if not price or price > free then return nil end
+            return reason, profit, pct
+        end
         if reason then return reason, profit, pct end
         local entry = judging
         if entry and price and price > 0 and price <= entry.l then
