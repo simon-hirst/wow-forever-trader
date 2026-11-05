@@ -97,16 +97,6 @@ class SniperSpeedAndPriority(unittest.TestCase):
         self.aux.UniqueGearSignatures(records)
         self.assertEqual((records[1].search_signature, records[2].search_signature), (a, b))
 
-    def test_completed_browse_is_counted_before_cancellable_verification(self):
-        self.sim.set_commodity(LINEN, [(10, 5)])
-        self.sim.open_auction_house()
-        self.assertTrue(self.sim.run_until(
-            lambda: self.sim.phase_is('READY'), timeout=30))
-        # Selecting a fresh deal intentionally aborts the original aux scan.
-        self.assertGreaterEqual(self.aux.stats.browses, 1)
-        self.assertEqual(self.aux.stats.rounds, 0)
-        self.assertIn('browses', self.aux.StatsLine())
-
     def test_speed_modes_are_explicit_and_reject_unknown_names(self):
         self.assertEqual(self.aux.Speed(), 'fast')
         self.assertTrue(self.aux.SetSpeed('normal'))
@@ -446,6 +436,39 @@ class ConfirmWithRealAux(unittest.TestCase):
     def wait_ready(self, timeout=30):
         self.assertTrue(self.sim.run_until(lambda: self.sim.phase_is('READY'), timeout=timeout), f'never ready: phase {self.sim.phase}')
         self.sim.run(0.3)  # past the anti-misclick delay
+
+    def test_browse_is_counted_even_when_quick_buy_interrupts_the_round(self):
+        self.sim.set_commodity(LINEN, [(10, 5)])
+        self.start()
+        self.wait_ready()
+        self.assertGreaterEqual(self.ns.Aux.stats.browses, 1)
+        # The original aux Sniper scan was interrupted to check the deal.
+        self.assertEqual(self.ns.Aux.stats.rounds, 0)
+        self.assertIn('browses', self.ns.Aux.StatsLine())
+
+    def test_sniper_listing_keeps_same_price_gear_variants_separate(self):
+        self.start()
+        self.sim.run(1)
+        listing = self.ns.Aux.env.listing
+        make = self.sim.lua.eval("""function()
+            local a = {item_key='4566:0', item_id=4566, auction_id=11,
+                name='Sturdy Quarterstaff of Power', link='item:4566',
+                search_signature='4566:600:identical',
+                count=1, quality=1, buyout_price=600, unit_buyout_price=600,
+                bid_price=0, unit_bid_price=0, time_left=2}
+            local b = {item_key='4566:0', item_id=4566, auction_id=12,
+                name='Sturdy Quarterstaff of Magic', link='item:4566',
+                search_signature='4566:600:identical',
+                count=1, quality=1, buyout_price=600, unit_buyout_price=600,
+                bid_price=0, unit_bid_price=0, time_left=2}
+            return a, b
+        end""")
+        power, magic = make()
+        listing.SetDatabase(listing, self.sim.lua.table_from([power, magic]))
+        listing.SetSelectedRecord(listing, magic)
+        selection = listing.GetSelection(listing)
+        self.assertTrue(selection is not None)
+        self.assertTrue(self.sim.lua.eval('function(a,b) return a == b end')(selection.record, magic))
 
     def test_opening_the_auction_house_starts_everything(self):
         self.start()
