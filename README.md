@@ -40,8 +40,9 @@ before auxForever waits for every remaining page.
 
 - `/ft pages on` enables the experiment (default for this development branch).
 - `/ft pages off` immediately disables it without reloading the game.
-- `/ft pagestats` displays early checks, successful early bargain detections,
-  cumulative early search time and first-check latency.
+- `/ft pagestats` displays the effective early profit threshold, early checks,
+  validated bargains, unverified candidates, cumulative search time and last
+  first-check latency (retained when the next scan begins).
 - `/ft scanstats` still reports full browse/verification timings and now includes
   early detections.
 - `/ft bets off` keeps trading vendor-only; `/ft speed normal` is the
@@ -57,8 +58,10 @@ deal and auxForever intentionally interrupts the round.
 
 Safeguards:
 - At most **one early item lookup per page and four per round**.
-- Early candidates need at least **25c/unit vendor margin** (or the user's
-  higher minimum); smaller finds still go through the normal completed browse.
+- Early candidates now use **the same minimum vendor profit as auxForever's
+  Sniper** (for example, 5c if its field says 5c). The former 25c floor missed
+  many small but valid vendor flips. The one-check-per-page/four-per-round cap
+  and 35s same-price cooldown still limit extra requests.
 - Browse price is only a hint: bid-only rows do not authorise any purchase.
 - If the client's browse cache shrinks, unexpectedly becomes "full" during an
   item search, or pagination fails after interleaving, the addon aborts the

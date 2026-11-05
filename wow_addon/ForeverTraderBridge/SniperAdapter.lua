@@ -23,7 +23,7 @@ local pagesThisRound, firstPageAt = 0, nil
 -- The server throttle remains entirely owned by aux.core.scan.request().
 local EARLY_PER_PAGE = 1
 local EARLY_PER_ROUND = 4
-local EARLY_MIN_PROFIT = 25  -- copper, unless the user's threshold is higher
+local EARLY_MIN_PROFIT = 1   -- respect auxForever's actual per-item minimum
 local EARLY_RECHECK_SECONDS = 35
 local earlySeen = {}         -- this round: item key -> last browse minPrice
 local earlyRecent = {}       -- across rounds: item key -> price/quantity/time
@@ -32,9 +32,11 @@ local earlySessionDisabled = false
 
 Aux.stats.earlyChecks = 0
 Aux.stats.earlyDeals = 0
+Aux.stats.earlyMisses = 0
 Aux.stats.earlyPages = 0
 Aux.stats.earlySpent = 0
 Aux.stats.earlyFirst = 0
+Aux.stats.lastEarlyFirst = 0  -- persist last result across subsequent rounds
 Aux.stats.earlyRoundChecks = 0
 
 function Aux.PagesOn()
@@ -108,17 +110,30 @@ function Aux.PreviewBrowsePage()
         Aux.stats.earlyChecks = Aux.stats.earlyChecks + 1
         if not Aux.stats.earlyFirst or Aux.stats.earlyFirst == 0 then
             Aux.stats.earlyFirst = now - (Aux.stats.roundAt or now)
+            Aux.stats.lastEarlyFirst = Aux.stats.earlyFirst
         end
-        local dealCount = #Aux.env.deals
+        -- The Sniper replaces an existing record in place when the same
+        -- item key is rechecked, so #deals may stay constant on success.
+        local beforeDeal
+        for _, deal in ipairs(Aux.env.deals) do
+            if deal.deal_key == c.keyStr then beforeDeal = deal; break end
+        end
         local t0 = GetTime()
         -- MUST NOT call through pcall: scan.read_item yields on Lua 5.1.
         Aux.env.check_item(c.row.itemKey, c.keyStr, c.price)
         Aux.stats.earlySpent = Aux.stats.earlySpent + GetTime() - t0
-        if #Aux.env.deals > dealCount then
+        local newDeal
+        for _, deal in ipairs(Aux.env.deals) do
+            if deal.deal_key == c.keyStr then newDeal = deal; break end
+        end
+        if newDeal and newDeal ~= beforeDeal and not newDeal.deal_gone
+            and not newDeal.deal_bought then
             Aux.stats.earlyDeals = Aux.stats.earlyDeals + 1
             NS.Log('early page bargain: ' .. tostring(c.keyStr) ..
                 ' +at least ' .. tostring(c.profit) .. 'c per unit')
             break -- an actionable deal takes precedence over pagination
+        else
+            Aux.stats.earlyMisses = Aux.stats.earlyMisses + 1
         end
     end
     earlyInProgress = false
@@ -135,9 +150,11 @@ end
 
 function Aux.PreviewStats()
     local s = Aux.stats
-    return string.format('pages %s%s, early checks %d (this round %d), early bargains %d, early search %.1fs, first early %.1fs',
-        Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '', s.earlyChecks, s.earlyRoundChecks,
-        s.earlyDeals, s.earlySpent, s.earlyFirst)
+    local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module and Aux.module.account_data.sniper_profit) or 0)
+    return string.format('pages %s%s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, last first check %.1fs',
+        Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '', minProfit,
+        s.earlyChecks, s.earlyRoundChecks, s.earlyDeals, s.earlyMisses,
+        s.earlySpent, s.lastEarlyFirst)
 end
 
 

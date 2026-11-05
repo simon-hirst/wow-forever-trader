@@ -498,6 +498,36 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.sim.set_commodity(CLOAK, [(800, 2)])  # vendor 0
         self.sim.set_commodity(BOLT, [(1000, 3)])  # vendor 40
 
+    def test_small_vendor_margin_is_checked_early_when_aux_threshold_allows(self):
+        # Old hard-coded 25c minimum silently excluded most of the player's
+        # 5-24c vendor flips. The page scanner must honour auxForever's 5c.
+        self.sim.g['__ah'].browsePageSize = 1
+        self.sim.g['__ah'].browseLatency = 1.5
+        self.sim.set_commodity(BOLT, [(30, 3)])  # vendor 40, 10c profit
+        self.sim.set_commodity(CLOAK, [(300, 1)])
+        self.sim.lua.execute('aux.account.sniper_profit = 5')
+        self.start()
+        self.wait_ready(timeout=15)
+        self.assertFalse(self.sim.g['C_AuctionHouse'].HasFullBrowseResults())
+        self.assertGreaterEqual(self.ns.Aux.stats.earlyChecks, 1)
+        self.assertEqual(self.ns.Aux.stats.earlyDeals, 1)
+        self.assertEqual(self.ns.Aux.stats.earlyMisses, 0)
+        self.assertGreater(self.ns.Aux.stats.lastEarlyFirst, 0)
+        self.assertIn('min 5c', self.ns.Aux.PreviewStats())
+        self.assertEqual(self.sim.bought(), [])
+
+    def test_early_check_respects_higher_user_minimum(self):
+        self.sim.g['__ah'].browsePageSize = 1
+        self.sim.g['__ah'].browseLatency = 0.5
+        self.sim.set_commodity(BOLT, [(30, 3)])  # 10c vendor margin
+        self.sim.set_commodity(CLOAK, [(300, 1)])
+        self.sim.lua.execute('aux.account.sniper_profit = 15')
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Market.rounds > 0, timeout=15))
+        self.assertEqual(self.ns.Aux.stats.earlyChecks, 0)
+        self.assertIn('min 15c', self.ns.Aux.PreviewStats())
+
     def test_early_vendor_deal_before_full_browse_is_not_bought_unattended(self):
         self._set_paged_market()
         self.start()
