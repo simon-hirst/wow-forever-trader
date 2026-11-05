@@ -35,6 +35,7 @@ class App(tk.Tk):
         super().__init__();self.title('Forever Trader  •  WoW Forever Auction House')
         self.geometry('1280x810');self.minsize(900,630);self.configure(bg=BG)
         self.store=MarketStore(user_data_dir());self.last_file_sig=None;self.last_bridge_sig=None;self.latest_update=None;self.skipped_update=None
+        self.protocol('WM_DELETE_WINDOW', self._close)
         self.sort_col='price';self.sort_reverse=False;self.market_rows=[]
         self.source_var=tk.StringVar(value=self.store.get_pref('auctionator_path'))
         self.aux_var=tk.StringVar(value=self.store.get_pref('aux_path'))
@@ -652,7 +653,11 @@ class App(tk.Tk):
             if getattr(sys,'frozen',False):install_on_exit(stage)
             else:install_source_on_exit(stage,Path(__file__).resolve().parents[1])
         except Exception as e:messagebox.showerror('Update failed',str(e));return
-        self.destroy()
+        self._close()
+
+    def _close(self):
+        try: self.store.close()
+        finally: self.destroy()
 
 
 def main():
