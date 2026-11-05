@@ -1,4 +1,13 @@
-# Forever Trader v0.3.2 — WoW Forever 1.60.1 desktop market terminal
+# Forever Trader v0.3.3 — WoW Forever 1.60.1 desktop market terminal
+
+## v0.3.3 — quick-sniper selection fix and safeguards
+
+- Fixed a bug that could leave the optional quick-buy overlay stuck at CHECK because the Sniper's internal selection is private. The overlay now reads the actual selected row.
+- All clicks still go through auxForever's live refresh and original Buy / Confirm mechanism.
+- Limits overlay commodity orders to at most five units, estimates spending against a 5s reserve, and disables the overlay's Confirm when the actual server quote would violate that reserve.
+- Prevents switching to another item while the existing buy bar has an outstanding server quote.
+- Patch auxForever **separately**, with WoW closed: `powershell -ExecutionPolicy Bypass -File .\INSTALL_QUICK_SNIPE_WINDOWS.ps1`. Use `-Uninstall` to remove it.
+- The in-game overlay has not been tested in the user's live client; begin with one low-value vendor-only flip.
 
 ## v0.3.2 — next-session trading improvements
 

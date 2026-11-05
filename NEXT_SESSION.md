@@ -8,7 +8,7 @@
 
 **Latest exported market data:** 845 catalog items, 20 detailed order books, 17 transaction observations; 2 confirmed purchases, 0 confirmed NPC sales and 15 review events on the old Bridge. No speculative AH buys recommended from that stale snapshot.
 
-## New code in v0.3.2
+## New code in v0.3.3 (includes v0.3.2)
 
 - Better NPC sale matching: wait until bags and cash match, and use cached item-link vendor payouts.
 - AH commodity purchase evidence from the player's quote/confirm and game purchase events.
@@ -18,7 +18,7 @@
 
 ## Next steps when returning
 
-1. Start Forever Trader and accept the v0.3.2 update if published. Verify Bridge sync is enabled in Settings; `/reload` WoW after update, or restart WoW.
+1. Start Forever Trader and accept the v0.3.3 update when offered. Verify Bridge sync is enabled in Settings; `/reload` WoW after update, or restart WoW.
 2. Optional quick-buy setup (with WoW closed): `powershell -ExecutionPolicy Bypass -File .\INSTALL_QUICK_SNIPE_WINDOWS.ps1`. To undo: run with `-Uninstall`. It modifies only `auxForever\tabs\sniper\frame.lua` and keeps a backup. Use `/ftquick` to toggle the overlay in game.
 3. Stay with Sniper's **1c minimum profit** and **vendor-only purchases** while the historical scans accrue. Confirm price & quantity before buying. Keep 5s available.
 4. Execute a few NEW vendor flips after the Bridge update; type `/ftmoney`, then `/reload` to persist. Export the ZIP in Forever Trader and upload it to ChatGPT.
@@ -31,3 +31,12 @@
 - Game addon's SavedVariables only sync to Windows on `/reload` or logout.
 - A player-click is required for each action; no unattended bidding/purchasing.
 - Wallet change totals include potential unrelated repairs, quest money and other activity. Do not equate change in cash to audited trading profit without reconciliation.
+
+
+## Quick-buy safety and first live validation
+
+- The optional cursor-adjacent button is NOT installed by the desktop auto-updater. With WoW closed, run `powershell -ExecutionPolicy Bypass -File .\INSTALL_QUICK_SNIPE_WINDOWS.ps1`; WoW must be restarted. Use `-Uninstall` to remove it.
+- v0.3.3 fixes a selection bug in v0.3.2. A CHECK click selects and causes auxForever to refresh the live auction. Next click buys an item or asks for a commodity quote; a distinct click confirms that quote.
+- A commodity order is capped at five units. The overlay requires at least 5s cash to remain based on asking prices AND the actual server quote; it disables confirmation for quotes over that cap. Verify the price before clicking.
+- Live-client validation remains outstanding. Try ONE low-value vendor flip first. If any LUA errors or the overlay behaves oddly, toggle `/ftquick` off immediately and uninstall the patch before continuing.
+- Never confuse saved wallet changes with proven realised profit; export new receipts after `/reload` and reconcile.
