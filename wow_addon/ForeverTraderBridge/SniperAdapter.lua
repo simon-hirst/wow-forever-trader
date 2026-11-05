@@ -14,7 +14,7 @@ local SNIPER_TAB_FALLBACK = 2
 -- round. Shorter pauses only remove idle time; they cannot bypass the AH's
 -- throttled-message gate. Keep a fallback if the realm starts dropping requests.
 local SPEED_PAUSE = {fast = 0.35, normal = 2.5, safe = 6}
-Aux.stats = {rounds = 0, rows = 0, priorities = 0, pages = 0, firstPage = 0, browse = 0, verify = 0}
+Aux.stats = {rounds = 0, browses = 0, started = 0, rows = 0, priorities = 0, pages = 0, firstPage = 0, browse = 0, verify = 0}
 local pagesThisRound, firstPageAt = 0, nil
 
 function Aux.SetSpeed(speed)
@@ -32,10 +32,45 @@ function Aux.Speed()
 end
 
 function Aux.StatsLine()
-    local a = Aux.stats
-    if a.rounds == 0 then return 'no finished rounds yet (speed ' .. Aux.Speed() .. ')' end
-    return string.format('round %d: %d items, browse %.1fs (first page %.1fs, %d events), candidate checks %.1fs, %d vendor priorities, speed %s',
-        a.rounds, a.rows, a.browse, a.firstPage, a.pages, a.verify, a.priorities, Aux.Speed())
+    local a, env = Aux.stats, Aux.env
+    local speed = Aux.Speed()
+    local finished = env and tonumber(env.round) or 0
+    local phase = 'idle'
+    if env and env.active then
+        local checking = env.checking
+        if checking and checking.total then
+            phase = string.format('checking candidates %d/%d', checking.done or 0, checking.total)
+        else
+            phase = 'reading browse pages'
+        end
+    end
+    local elapsed = a.roundAt and math.max(0, GetTime() - a.roundAt) or 0
+    if a.browses == 0 then
+        return string.format('browse not returned yet; %s, %.1fs elapsed, pages %d, speed %s',
+            phase, elapsed, pagesThisRound, speed)
+    end
+    return string.format('browses %d, completed rounds %d, last %d items, browse %.1fs (first page %.1fs, %d page events), verification %s, priority candidates %d, current %s %.1fs, speed %s',
+        a.browses, finished, a.rows, a.browse, a.firstPage, a.pages,
+        phase == 'checking candidates' and 'active' or string.format('last %.1fs', a.verify),
+        a.priorities, phase, elapsed, speed)
+end
+
+-- auxForever groups listings by search_signature, which can represent multiple
+-- *different enchanted items* at the same price. Preserve the original signature,
+-- but give every distinct gear auction its own Sniper row so selecting "of Magic"
+-- cannot silently select "of Power". This changes only the Sniper's visible row
+-- grouping, never the auction key or the item's price.
+function Aux.UniqueGearSignatures(records)
+    if type(records) ~= 'table' then return end
+    for _, record in ipairs(records) do
+        if record and not record.commodity and record.search_signature then
+            if not record.ft_base_signature then
+                record.ft_base_signature = record.search_signature
+            end
+            local identity = record.auction_id or record.name or record.item_key or '?'
+            record.search_signature = record.ft_base_signature .. '|FTGEAR|' .. tostring(identity)
+        end
+    end
 end
 
 -- Return a new array, leaving the game's browse-result table unmodified.
@@ -114,9 +149,16 @@ local function installHooks(env)
     local checkList = env.check_list
     Aux.checkItems = checkList
 
+    local originalSetDatabase = env.listing.SetDatabase
+    env.listing.SetDatabase = function(self, records)
+        Aux.UniqueGearSignatures(records)
+        return originalSetDatabase(self, records)
+    end
+
     local startRound = env.start_round
     env.start_round = function(...)
         Aux.stats.roundAt = GetTime()
+        Aux.stats.started = Aux.stats.started + 1
         pagesThisRound, firstPageAt = 0, nil
         return startRound(...)
     end
@@ -139,20 +181,27 @@ local function installHooks(env)
         local t0 = GetTime()
         local started = Aux.stats.roundAt or t0
         local browseSeconds = math.max(0, t0 - started)
+        local stats = Aux.stats
+        -- Increment HERE, before checking candidates. auxForever yields for
+        -- every candidate and the Confirm button may abort this coroutine.
+        -- The old code incremented afterwards, reporting zero despite 20+ browses.
+        stats.browses = stats.browses + 1
+        stats.rows = #results
+        stats.pages = pagesThisRound
+        stats.firstPage = firstPageAt and firstPageAt - started or browseSeconds
+        stats.browse = browseSeconds
+        stats.verify = 0
         local ok, err = pcall(NS.Market.OnBrowse, results)
         if not ok then NS.Log('market error: ' .. tostring(err)) end
         local ranked, count = Aux.RankVendorCandidates(results, env.known,
             Aux.scan.item_key_string, GetMoney() - (NS.Settings().reserve or 0))
-        local response = checkList(ranked, seen)
-        local stats = Aux.stats
-        stats.rounds = stats.rounds + 1
-        stats.rows = #results
         stats.priorities = count
-        stats.pages = pagesThisRound
-        stats.firstPage = firstPageAt and firstPageAt - started or browseSeconds
-        stats.browse = browseSeconds
+        -- Yielding scan: it can be interrupted intentionally by a purchase.
+        -- stats.browses remains accurate even if control never returns here.
+        local response = checkList(ranked, seen)
+        stats.rounds = stats.rounds + 1
         stats.verify = math.max(0, GetTime() - t0)
-        if stats.rounds % 5 == 0 then NS.Log('sniper timing ' .. Aux.StatsLine()) end
+        if stats.browses % 5 == 0 then NS.Log('sniper timing ' .. Aux.StatsLine()) end
         return response
     end
 
