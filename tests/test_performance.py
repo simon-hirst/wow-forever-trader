@@ -8,7 +8,7 @@ from contextlib import ExitStack
 
 from trader import performance
 from trader.market import MarketStore
-from trader.bridge import parse_bridge
+from trader.bridge import parse_bridge, parse_live_receipt
 from trader.autopilot import Autopilot
 from trader.link import Frame, TYPE_LOG
 
@@ -71,6 +71,25 @@ class TestPerformance(unittest.TestCase):
         self.assertEqual(len(parsed['snipe_metrics']),1)
         self.assertEqual(self.store.ingest_snipe_metrics(parsed),0)
         self.assertEqual(self.store.sniper_performance()['attempts'],1)
+
+    def test_verified_trade_receipts_stream_live_and_dedupe_on_reload(self):
+        buy='FTREC1|1|1793863010|Mage-PvP|AH_BUY|2589|2|20|confirmed'
+        sold='FTREC1|2|1793863080|Mage-PvP|VENDOR_SELL|2589|2|26|confirmed'
+        worker=Autopilot(pathlib.Path(self.temp.name),None,lambda:{})
+        for n,line in enumerate((buy,sold)):
+            self.assertEqual(parse_live_receipt(line)['status'],'confirmed')
+            worker._handle_frame(self.store,Frame(type=TYPE_LOG,seq=n,payload=line.encode()))
+        p=self.store.sniper_performance()['confirmed_vendor']
+        self.assertEqual(p['realised'],6)
+        self.assertEqual(p['matched_qty'],2)
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM automatic_events').fetchone()[0],2)
+        for n,line in enumerate((buy,sold)):
+            worker._handle_frame(self.store,Frame(type=TYPE_LOG,seq=n+2,payload=line.encode()))
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM automatic_events').fetchone()[0],2)
+        with self.assertRaises(ValueError):
+            parse_live_receipt('FTREC1|3|1793863080|Mage-PvP|VENDOR_SELL|2589|2|27|confirmed')
+        with self.assertRaises(ValueError):
+            parse_live_receipt('FTREC1|4|1793863080|Mage-PvP|AH_BUY|2589|2|20|review')
 
     def test_matched_vendor_profit_tracks_character_and_exact_copper(self):
         db=self.store.db
