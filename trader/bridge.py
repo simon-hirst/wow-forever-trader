@@ -178,3 +178,28 @@ def parse_bridge(path: Path) -> dict:
     return {'books':books,'count':len(books),'market':str(table.get('market') or 'PvP'),
             'activity':activity,'wallets':wallets,'wallet_changes':changes,'snipe_metrics':snipe_metrics,'bars':bars,'snapshots':snapshots,
             'log':[str(v) for _,v in sorted((table.get('log') or {}).items()) if isinstance(v,str)]}
+
+
+def parse_live_receipt(line: str) -> dict:
+    """One previously confirmed in-game trade receipt delivered over the link.
+
+    Do not accept REVIEW messages here; ambiguous evidence is only imported
+    from SavedVariables and requires user review.
+    """
+    if not isinstance(line,str) or not line.startswith('FTREC1|'):
+        raise ValueError('Not a live trade receipt')
+    parts=line.rstrip('\r\n').split('|')
+    if len(parts)!=9:raise ValueError('Incomplete live trade receipt')
+    _,uid,ts,char,kind,item_id,qty,total,status=parts
+    if not uid.isdigit() or int(uid)<=0 or len(uid)>32:raise ValueError('Invalid event UID')
+    if not char or len(char)>120 or '\n' in char:raise ValueError('Invalid character')
+    if kind not in ('AH_BUY','VENDOR_SELL') or status!='confirmed':
+        raise ValueError('Unverified receipt cannot become an automatic trade')
+    ts=int(ts);item_id=int(item_id);qty=int(qty);total=int(total)
+    if not 1600000000<ts<4102444800 or not 0<item_id<=10_000_000 or not 0<qty<=100000 or not 0<total<=10**10:
+        raise ValueError('Invalid trade receipt')
+    if kind=='VENDOR_SELL' and total%qty:
+        raise ValueError('Vendor receipt payout must divide evenly')
+    return {'uid':uid,'ts':ts,'character':char,'kind':kind,'item_id':str(item_id),
+            'qty':qty,'total':total,'status':'confirmed',
+            'note':'Live-confirmed by in-game purchase/merchant evidence'}

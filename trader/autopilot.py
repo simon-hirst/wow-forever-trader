@@ -12,6 +12,7 @@ from . import link as link_protocol
 from . import marketdata as md
 from . import strategy, performance
 from .market import MarketStore
+from .bridge import parse_live_receipt
 
 ANALYSE_EVERY_SECONDS = 180
 EXPORT_EVERY_SECONDS = 15 * 60
@@ -117,6 +118,12 @@ class Autopilot(threading.Thread):
                         store.ingest_snipe_metrics({'snipe_metrics':[row]})
                     except (ValueError,TypeError,OverflowError) as exc:
                         self._log('invalid sniper telemetry: '+str(exc))
+                elif message.startswith('FTREC1|'):
+                    try:
+                        row=parse_live_receipt(message)
+                        store.ingest_activity({'activity':[row]})
+                    except (ValueError,TypeError,OverflowError) as exc:
+                        self._log('invalid live trade receipt: '+str(exc))
                 else:
                     self._log('addon: '+message)
             elif frame.type == link_protocol.TYPE_TEST:

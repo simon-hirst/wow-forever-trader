@@ -235,10 +235,20 @@ local function eventRecord(kind,id,qty,total,status,note)
     local db=ensureTxnDB()
     if not db then return end
     db.activity_seq=db.activity_seq+1
-    db.activity[#db.activity+1]={uid=tostring(db.activity_seq),ts=time(),
+    local record={uid=tostring(db.activity_seq),ts=time(),
         character=characterID,kind=kind,item_id=id or 0,qty=qty or 0,
         total=total or 0,status=status or 'review',note=note or ''}
+    db.activity[#db.activity+1]=record
     if #db.activity>MAX_EVENTS then table.remove(db.activity,1) end
+    -- A confirmed receipt is backed by the actual money and bag/purchase
+    -- evidence above. Send it over the link immediately, using the same UID
+    -- as SavedVariables so /reload can never count it a second time.
+    if record.status=='confirmed' and NS.Log then
+        local fields={record.uid,record.ts,record.character,record.kind,
+            record.item_id,record.qty,record.total,record.status}
+        for i,value in ipairs(fields) do fields[i]=tostring(value) end
+        NS.Log('FTREC1|'..table.concat(fields,'|'))
+    end
 end
 
 local function settleMerchant(final)
@@ -446,6 +456,9 @@ txnFrame:SetScript('OnEvent',function(_,event,...)
             C_Timer.After(2,function() if mode=='AH' then settleAH();mode=nil;recordWallet() end end)
         end
     elseif event=='MERCHANT_SHOW' then
+        -- The optical data link normally sleeps outside the AH. Wake it for
+        -- the merchant session so verified vendor payouts reach Windows live.
+        if NS.Link and NS.Link.Open then NS.Link.Open() end
         if merchantMoney~=nil then settleMerchant(true) end
         merchantToken=merchantToken+1
         mode='MERCHANT';merchantMoney=GetMoney()
@@ -460,10 +473,12 @@ txnFrame:SetScript('OnEvent',function(_,event,...)
             C_Timer.After(.35,function()
                 if token==merchantToken then
                     settleMerchant(true);merchantMoney=nil;recordWallet()
+                    if NS.Link and NS.Link.Close then NS.Link.Close() end
                 end
             end)
         else
             settleMerchant(true);merchantMoney=nil;recordWallet()
+            if NS.Link and NS.Link.Close then NS.Link.Close() end
         end
         previousMoney=GetMoney()
     elseif event=='PLAYER_MONEY' then
