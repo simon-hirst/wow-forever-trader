@@ -75,6 +75,65 @@ server serialisation or cached browse API differs, the feature might disable
 itself or interrupt a round. Record the `/ft pagestats` output and the first
 couple of browse/Confirm events to assess actual latency.
 
+## Sniper Performance dashboard (v0.4.0-live development build)
+
+The new **PERFORMANCE** tab audits the outcome of our below-vendor trading:
+
+- **Confirmed NPC profit**: only exact, confirmed AH-buy and merchant-sale receipts
+  matched FIFO by character and item. An AH purchase is not a profit, and a
+  Sniper's estimated vendor margin is **not** realised profit until sold.
+- **Bought versus lost**: attempts that reached the app-mediated Sniper workflow;
+  this does **not** count all available listings, and LOST may mean seller
+  cancellation, price movement, timeout or another buyer.
+- **Win rate**: BOUGHT / (BOUGHT + LOST); skipped/expired offers are shown
+  separately and not counted as competitive losses.
+- **First page to successful purchase**: median of live monotonic timing for
+  early-page buys. Full-browse-only offers have no fabricated page timing.
+- **Estimated profit per active hour**: uses confirmed vendor profits *since
+  Sniper telemetry started* and observed gaps between attempts. This is an
+  approximation and stays blank until >=10 minutes of observed active time.
+- Recent activity table, **last-hour bought/lost chart**, and CSV exports.
+
+The in-game addon writes a completed Sniper attempt once, records it in
+`ForeverTraderBridgeDB.snipe_metrics`, and streams an `FTPM1` event through
+the existing optical data link. The Windows desktop merges the live and
+SavedVariables copies by immutable UID (no double counting on `/reload`).
+
+Confirmed purchase receipts (`FTREC1`) are streamed immediately too.
+The link also opens during merchant interactions and transmits confirmed
+vendor sales without a reload when both bag decreases and wallet increases
+match. Uncertain merchant payments remain REVIEW and **never** count as
+realised profit until explicitly verified. If WoW is minimised, the link is
+not visible, or a message is missed, `/reload` or logout provides the
+SavedVariables recovery path.
+
+**Existing history is not reconstructed.** Data collection starts when this
+new Bridge first runs; your manually reported 1g 82s 04c checkpoint is not
+silently attributed to individual transactions. Older manually recorded
+trades still appear under TRADE JOURNAL, but are not presented as
+receipt-verified automatic vendor profit.
+
+### First live verification (development branch)
+
+1. Close WoW, pull `v0.4.0-live`, run `INSTALL_ADDON_WINDOWS.cmd`, and
+   launch the matching `START_WINDOWS.cmd` desktop app.
+2. Restart WoW, visit the AH and keep `/ft bets off`, `/ft pages on` and
+   `/ft speed normal` (the proven scanner settings).
+3. Buy **one** small below-vendor item with the cursor Confirm button.
+   Check PERFORMANCE for a new BOUGHT attempt and early-page latency.
+4. Vendor that item. Check the PERFORMANCE **confirmed NPC P&L** counter.
+   If the link missed the sale, type `/reload` after closing the vendor.
+5. Check AUTO ACTIVITY for any REVIEW receipts, and verify those rather
+   than assuming they represent profit.
+6. If you have a live Sniper problem, `/ft pages off` disables incremental
+   scanning immediately. This dashboard adds metrics only; it never
+   automatically clicks or purchases.
+
+**This is an experimental branch, not a published stable auto-update.**
+Windows CI/Lua simulations have passed but live merchant telemetry and
+the visual dashboard must be checked on your actual client before tagging
+a stable v0.4.0 release.
+
 ## Setup
 
 1. Install Python 3 from [python.org](https://www.python.org/downloads/windows/), or use the EXE from GitHub Releases. Nothing else is needed.
