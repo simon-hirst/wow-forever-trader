@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      - v0.4.0-live
     tags:
       - 'v*'
   workflow_dispatch:
@@ -18,7 +19,15 @@ jobs:
           python-version: '3.12'
       - name: Install packager and Lua test runtime
         run: python -m pip install --upgrade pyinstaller lupa
+      - name: Fetch auxForever for real Sniper integration tests
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/TylerHampton/aux-forever.git .test-aux
+          cd .test-aux
+          git checkout 2d87ed6c3e6d009c90c4891f7bb89c31e17b2b1e
       - name: Test parsing, analytics and addon logic
+        env:
+          FT_AUX_DIR: .test-aux/auxForever
         run: python -m unittest discover -s tests -t . -v
       - name: Build Windows 11 EXE
         run: pyinstaller --clean --noconfirm --onefile --windowed --name ForeverTrader --paths . --add-data "wow_addon;wow_addon" app.py
