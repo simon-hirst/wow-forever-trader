@@ -6,8 +6,8 @@ untrusted archive, an unexpected path, or a missing checksum is detected.
 from __future__ import annotations
 import os, pathlib, shutil, sys, time, zipfile
 
-ALLOWED_ROOTS={'trader','tests','wow_addon','.github','scripts','tools'}
-ALLOWED_FILES={'app.py','README.md','START_WINDOWS.cmd','START_SILENT_WINDOWS.cmd',
+ALLOWED_ROOTS={'trader','tests','wow_addon','.github','scripts','tools','.claude'}
+ALLOWED_FILES={'app.py','README.md','CLAUDE.md','START_WINDOWS.cmd','START_SILENT_WINDOWS.cmd',
                'BUILD_WINDOWS_EXE.cmd','INSTALL_ADDON_WINDOWS.cmd','PUBLISH_RELEASE.ps1',
                'SETUP_GITHUB_WINDOWS.ps1','INSTALL_QUICK_SNIPE_WINDOWS.ps1','NEXT_SESSION.md','.gitignore'}
 

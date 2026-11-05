@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="FOREVERTRADER_CONFIRM" header="FOREVERTRADER">
+    ForeverTrader_Confirm()
+  </Binding>
+</Bindings>

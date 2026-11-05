@@ -1,4 +1,77 @@
-# Forever Trader v0.3.3 — WoW Forever 1.60.1 desktop market terminal
+# Forever Trader v0.4.0: WoW Forever auction house terminal
+
+A Windows desktop app and a WoW addon. Open the auction house and it scans the market by itself, works out what things are worth and how fast they really sell, and turns that into a set of limit orders. When something lists at or under a limit, or below what an NPC vendor pays, a **Confirm** button appears at your cursor. One press buys it.
+
+## Setup
+
+1. Install Python 3 from [python.org](https://www.python.org/downloads/windows/), or use the EXE from GitHub Releases. Nothing else is needed.
+2. With WoW closed, run `INSTALL_ADDON_WINDOWS.cmd` once. auxForever must be installed too; AHledger and Auctionator are optional.
+3. Double-click `START_WINDOWS.cmd`. Later updates to the addon install themselves when you start the app, if the sync box in Settings is ticked.
+4. Restart WoW. It only finds new addon files on a fresh start.
+
+## Using it
+
+Start the app, then open the auction house. That's all:
+
+- The addon opens auxForever's Sniper and starts it, and asks for a full listing of the house every 15 minutes.
+- A thin line of coloured blocks appears at the top-left of the game window. That is how data reaches the app, so keep it visible. No `/reload` is needed.
+- The **STRATEGY** tab updates as data arrives.
+
+### The Confirm button
+
+- **Stackable items:** one press buys every unit under the limit, cheapest first. The press starts the purchase and the addon confirms it when the server's price arrives. If the price has gone up, nothing is bought and it offers what is left, for another press.
+- **Gear:** one press per auction, because the game requires it.
+- A mouse-wheel notch over the button counts as a press. You can also bind a key under Key Bindings > AddOns.
+- Right-click skips a deal. Ignored deals go away after 15 seconds so scanning can continue.
+- If your cursor is outside WoW, a **Windows button** appears instead, and works even when WoW isn't focused. Each click sends one key press to WoW. There is no repeat or timer behind it.
+
+**How much it spends:** below-vendor deals can use everything except the reserve (5s by default; `/ft reserve <copper>`). Other deals get at most a quarter of free cash and the plan's unit cap, because those are bets on resale. Nothing is ever bought without a press.
+
+### The strategy
+
+Sales are never published, so the engine estimates them. Stackables always sell cheapest-first, so units disappearing from the front of the book between two full listings are counted as sold, while units vanishing from behind an untouched price were cancelled or expired. From that it gets a sales rate per item, then works out where you could relist after buying, how long that would take, and the most you can pay and still clear the required margin after the 5% cut.
+
+Each order has an evidence grade:
+
+| Grade | Needs | Required margin | Max share of free cash |
+| --- | --- | ---: | ---: |
+| C | under a day of history | 25% | 10% |
+| B | 24 hours and 10 listing comparisons | 18% | 18% |
+| A | 3 days, 50 comparisons and a proven record of past calls | 12% | 25% |
+
+Past calls are scored automatically against what the market then did. Until some have played out, treat the limits as unproven: estimated sales are estimates, and a fair price today can be wrong tomorrow.
+
+### Reviews with Claude Code
+
+The app writes a ZIP to `%APPDATA%\ForeverTrader\exports` every 15 minutes when there is new data. With a Claude Code chat open in this folder, type `/ft-review` to get a review, or ask it to watch the folder. Its advice goes in `analyst\notes.json`, which the app applies on its next pass. Notes can only tighten the plan, never raise a limit. Nothing is uploaded by the app itself.
+
+### In-game commands
+
+`/ft diag` shows what's working. `/ft auto on|off`, `/ft link on|off`, `/ft autoconfirm on|off`, `/ft reserve <copper>`, `/ft log`. `/ftmoney` and `/ftb` still work.
+
+## Risks
+
+This is third-party software used with a Blizzard game. Blizzard's EULA is broad: it covers software "that can be used in connection with the Platform" and processes that read game information, as well as bots. The scanning uses only what the addon API allows and nothing touches the game's memory, but none of this is authorised by Blizzard, and the Windows button sends input to the game. Use it knowing that. Prices move and none of this guarantees profit.
+
+**If something misbehaves:** `/ft auto off`, or disable the addon at character select.
+
+## Tests
+
+```shell
+pip install lupa   # optional: runs the addon's Lua in a simulated client
+python -m unittest discover -s tests -t .
+```
+
+# Version history
+
+## v0.4.0
+- Automatic scanning whenever the auction house is open, with a live data link that needs no `/reload`.
+- Market engine, limit-order plan, scoring of past calls, STRATEGY tab, automatic exports, Claude Code review command.
+- Confirm button at the cursor, and a Windows button that relays one key press per click. These replace the never-installed `INSTALL_QUICK_SNIPE` patch: aux's files are no longer edited.
+- Fixed vendor prices and item names always being missing: the addon called a function this client no longer has, so the VENDOR FLIPS tab could not have found anything.
+- The installer and app now find WoW on any drive.
+
+Everything below describes older versions and is kept for reference. Where it differs from the sections above, it is out of date.
 
 ## v0.3.3 — quick-sniper selection fix and safeguards
 

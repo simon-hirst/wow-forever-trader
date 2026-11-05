@@ -1,9 +1,14 @@
--- Forever Trader Bridge v0.2.0: passive, read-only collection of the player's
--- normal Auction House detail search results, including searches via auxForever.
--- No automation, purchases, uploads, or interaction with seller identities.
+-- Forever Trader Bridge: order-book and wallet receipts. Market.lua records the
+-- wider market, Snipe.lua owns the cursor Confirm button (one real press per
+-- purchase), and Link.lua carries data to the desktop app.
+local _, NS = ...
 local AH = C_AuctionHouse
 local MAX_BOOKS, MAX_LEVELS = 300, 250
 local frame = CreateFrame('Frame')
+-- Forever moved these into C_Item; the old global is nil, which made every vendor
+-- price 0 and every name 'Item #id' in earlier versions of this addon.
+local GetItemInfo = (C_Item and C_Item.GetItemInfo) or _G.GetItemInfo
+NS.GetItemInfo = GetItemInfo
 
 local function ready()
     return AH and type(AH.GetNumCommoditySearchResults) == 'function'
@@ -97,11 +102,17 @@ local function store_item(itemKey)
         kind='item',name=item_name(itemKey.itemID,itemKey),ts=time(),full=full,
         vendor=vendor_price(itemKey.itemID),total=count,levels=levels})
 end
-frame:RegisterEvent('ADDON_LOADED')
-frame:RegisterEvent('COMMODITY_SEARCH_RESULTS_UPDATED')
-frame:RegisterEvent('COMMODITY_SEARCH_RESULTS_ADDED')
-frame:RegisterEvent('ITEM_SEARCH_RESULTS_UPDATED')
-frame:RegisterEvent('ITEM_SEARCH_RESULTS_ADDED')
+-- An event this client does not have must not stop the others registering.
+local function listen(target, event)
+    local ok = pcall(target.RegisterEvent, target, event)
+    if not ok then NS.unknownEvents = (NS.unknownEvents or '') .. ' ' .. event end
+end
+NS.Listen = listen
+listen(frame, 'ADDON_LOADED')
+listen(frame, 'COMMODITY_SEARCH_RESULTS_UPDATED')
+listen(frame, 'COMMODITY_SEARCH_RESULTS_ADDED')
+listen(frame, 'ITEM_SEARCH_RESULTS_UPDATED')
+listen(frame, 'ITEM_SEARCH_RESULTS_ADDED')
 frame:SetScript('OnEvent',function(_,event,...)
     if event=='ADDON_LOADED' then
         if ...=='ForeverTraderBridge' then
@@ -126,8 +137,7 @@ SlashCmdList['FOREVERTRADERBRIDGE']=function()
     print('Forever Trader Bridge: '..n..' recent item order books recorded. Type /reload to save them for the Windows app.')
 end
 
--- v0.3.2: transaction evidence. All collection is passive; no automatic trade actions.
--- Keep uncertain receipts for manual review. Only reconcile sales after both the
+-- Transaction evidence. Keep uncertain receipts for manual review. Only reconcile sales after both the
 -- merchant wallet change and corresponding inventory change can be observed.
 local txnFrame = CreateFrame('Frame')
 local MAX_EVENTS, MAX_WALLET_CHANGES = 1600, 700
@@ -135,7 +145,7 @@ local mode, previousMoney, merchantMoney, merchantBags, merchantUnitPrices
 local pendingAH, moneyDebits = {}, {}
 local flushToken, merchantToken = 0, 0
 local auctionCache = {}
-local commodityIntent
+local commodityIntent, lastQuote, lastCommodity
 local characterID = 'Unknown'
 
 local function bagSnapshot()
@@ -302,6 +312,30 @@ local function settleAH()
             end
         end
     end
+    -- A commodity purchase knows the server's quoted total, which is exactly what leaves the
+    -- wallet, so each one is matched to a debit of that amount even when several land together
+    -- (a quick run of purchases) or a deposit is taken at the same time.
+    local unmatched={}
+    for _,p in ipairs(relevant) do
+        local matched
+        if p.expected and p.expected>0 and p.id and p.id>0 and (p.qty or 0)>0 then
+            for i,entry in ipairs(moneyDebits) do
+                if entry.amount==p.expected then
+                    table.remove(moneyDebits,i)
+                    matched=true
+                    break
+                end
+            end
+        end
+        if matched then
+            eventRecord('AH_BUY',p.id,p.qty,p.expected,'confirmed',
+                'Purchase matched a wallet debit of exactly its quoted price')
+        else
+            unmatched[#unmatched+1]=p
+        end
+    end
+    relevant=unmatched
+    if #relevant==0 then pendingAH={} return end
     if #relevant==1 and #moneyDebits>=1 then
         local p=relevant[1]
         local debit=0
@@ -363,16 +397,25 @@ end
 if AH and hooksecurefunc and type(AH.ConfirmCommoditiesPurchase)=='function' then
     pcall(hooksecurefunc,AH,'ConfirmCommoditiesPurchase',function(itemID,qty)
         if type(itemID)=='number' and type(qty)=='number' and qty>0 then
-            commodityIntent={id=itemID,qty=qty,ts=GetTime()}
+            -- The quote that came just before the confirm is what the server will take.
+            local quote=lastQuote and GetTime()-lastQuote.ts<=60 and lastQuote.total or nil
+            commodityIntent={id=itemID,qty=qty,ts=GetTime(),expected=quote}
         end
     end)
 end
 local function commodityPurchase(event,itemID,qty)
     local intent=commodityIntent
-    if intent and GetTime()-intent.ts<=12 and
+    local now=GetTime()
+    if type(itemID)~='number' or itemID==0 then itemID=nil end
+    if intent and now-intent.ts<=12 and
         (not itemID or itemID==intent.id) then
-        pushPurchase(intent.id,intent.qty,event)
+        pushPurchase(intent.id,intent.qty,event,intent.expected)
+        lastCommodity={id=intent.id,ts=now}
         commodityIntent=nil
+    elseif lastCommodity and now-lastCommodity.ts<=3 and (not itemID or itemID==lastCommodity.id) then
+        -- The same purchase, reported again by its second event (COMMODITY_PURCHASED and
+        -- COMMODITY_PURCHASE_SUCCEEDED both fire). Counting it twice made every receipt REVIEW.
+        return
     else
         pushPurchase(type(itemID)=='number' and itemID or 0,
                      type(qty)=='number' and qty or 0,event)
@@ -382,9 +425,9 @@ end
 for _,ev in ipairs({
     'PLAYER_LOGIN','PLAYER_ENTERING_WORLD','PLAYER_MONEY','BAG_UPDATE_DELAYED',
     'AUCTION_HOUSE_SHOW','AUCTION_HOUSE_CLOSED','MERCHANT_SHOW','MERCHANT_CLOSED',
-    'COMMODITY_PURCHASED','COMMODITY_PURCHASE_SUCCEEDED','ITEM_PURCHASED',
+    'COMMODITY_PURCHASED','COMMODITY_PURCHASE_SUCCEEDED','ITEM_PURCHASED','COMMODITY_PRICE_UPDATED',
     'AUCTION_HOUSE_PURCHASE_COMPLETED','ITEM_SEARCH_RESULTS_UPDATED','ITEM_SEARCH_RESULTS_ADDED'
-}) do txnFrame:RegisterEvent(ev) end
+}) do listen(txnFrame, ev) end
 
 txnFrame:SetScript('OnEvent',function(_,event,...)
     if event=='PLAYER_LOGIN' or event=='PLAYER_ENTERING_WORLD' then
@@ -432,6 +475,9 @@ txnFrame:SetScript('OnEvent',function(_,event,...)
         if mode=='AH' or mode=='MERCHANT' then scheduleFlush() end
     elseif event=='BAG_UPDATE_DELAYED' then
         if mode=='MERCHANT' then scheduleFlush() end
+    elseif event=='COMMODITY_PRICE_UPDATED' then
+        local _,total=...
+        if type(total)=='number' and total>0 then lastQuote={total=total,ts=GetTime()} end
     elseif event=='COMMODITY_PURCHASED' or event=='COMMODITY_PURCHASE_SUCCEEDED' then
         local itemID,qty=...
         commodityPurchase(event,itemID,qty)
@@ -441,9 +487,13 @@ txnFrame:SetScript('OnEvent',function(_,event,...)
     elseif event=='AUCTION_HOUSE_PURCHASE_COMPLETED' then
         local auctionID=...
         local info=auctionCache[auctionID]
+        local now=GetTime()
         if info then
             pushPurchase(info.id,info.qty,event,info.cost)
             auctionCache[auctionID]=nil
+        elseif (lastCommodity and now-lastCommodity.ts<=3) or (commodityIntent and now-commodityIntent.ts<=12) then
+            -- A commodity purchase's own completion notice: that purchase is counted by its
+            -- commodity event, so this is not a second, unknown purchase.
         else
             pushPurchase(0,0,event)
         end

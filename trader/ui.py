@@ -1,6 +1,6 @@
 """Win11 Tk desktop UI. Built using stdlib for reliable single-EXE packaging."""
 from __future__ import annotations
-import hashlib, json, os, sys, threading, time, webbrowser
+import hashlib, json, os, queue, sys, threading, time, webbrowser
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -9,7 +9,11 @@ from .market import MarketStore
 from .bridge import parse_bridge
 from .updater import get_latest,download_update,install_on_exit,download_source,install_source_on_exit
 from . import VERSION
-from .addon_sync import sync_installed_bridge
+from .addon_sync import sync_installed_bridge, addons_root
+from . import marketdata
+from .autopilot import Autopilot, exports_dir
+from .link import LinkReceiver, set_dpi_aware
+from .overlay import ConfirmOverlay
 
 BG='#0e1522';PANEL='#172336';PANEL2='#1d2c41';FG='#e7edf7';MUTED='#91a2bb';ACCENT='#51a9ff';GREEN='#52d1a6';ORANGE='#fbbf66';RED='#fa7185'
 
@@ -17,12 +21,27 @@ def user_data_dir():
     parent=os.getenv('APPDATA') or str(Path.home()/'.config')
     return Path(parent)/'ForeverTrader'
 
+def installed_wow_root():
+    """Where the Battle.net installer says WoW is. It can be on any drive."""
+    if os.name!='nt':return None
+    import winreg
+    for key_path in (r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\World of Warcraft',
+                     r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\World of Warcraft'):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,key_path) as key:
+                return Path(winreg.QueryValueEx(key,'InstallLocation')[0])
+        except OSError:
+            continue
+    return None
+
 def find_suggested_path():
     roots=[Path(os.getenv('PROGRAMFILES(X86)','C:/Program Files (x86)'))/'World of Warcraft',
            Path(os.getenv('PROGRAMFILES','C:/Program Files'))/'World of Warcraft',
            Path(os.getenv('USERPROFILE',str(Path.home())))/'Games'/'World of Warcraft',
            Path('C:/World of Warcraft'),Path('D:/World of Warcraft'),Path('D:/Games/World of Warcraft'),
            Path('E:/World of Warcraft')]
+    registered=installed_wow_root()
+    if registered:roots.insert(0,registered)
     for root in roots:
         base=root/'_forever_'/'WTF'/'Account'
         if base.exists():
@@ -46,11 +65,20 @@ class App(tk.Tk):
         self.reserve_var=tk.StringVar(value=self.store.get_pref('reserve','500'))
         self.search_var=tk.StringVar();self.status_var=tk.StringVar(value='Ready • select Auctionator.lua and optional Bridge data')
         self.filter_var=tk.StringVar(value='All items')
+        self.overlay_var=tk.BooleanVar(value=self.store.get_pref('windows_button','1')=='1')
+        self.auto_export_var=tk.BooleanVar(value=self.store.get_pref('auto_export','1')=='1')
+        self.link_state=None;self.link_state_at=0.0;self.last_market_files={}
         self._style();self._build()
         if not self.source_var.get():
             candidate=find_suggested_path()
             if candidate:self.source_var.set(str(candidate));self._save_settings()
-        self.after(100,self.refresh);self.after(4000,self._poll)
+        self.overlay=ConfirmOverlay(self,status=self.status_var.set)
+        self.overlay.enabled=self.overlay_var.get()
+        self.context_lock=threading.Lock();self.analysis_context={}
+        self._refresh_analysis_context()
+        self.link=LinkReceiver();self.link.start()
+        self.autopilot=Autopilot(user_data_dir(),self.link.frames,self._analysis_context);self.autopilot.start()
+        self.after(100,self.refresh);self.after(4000,self._poll);self.after(50,self._poll_link)
         if self.sync_bridge_var.get():self.after(800,self._sync_bridge_silently)
         self.after(10000,self._async_update_check)
     def _style(self):
@@ -82,18 +110,19 @@ class App(tk.Tk):
         top=ttk.Frame(outer);top.pack(fill='x')
         left=ttk.Frame(top);left.pack(side='left',fill='x',expand=True)
         ttk.Label(left,text='FOREVER / MARKET TERMINAL',style='Title.TLabel').pack(anchor='w')
-        ttk.Label(left,text='EU · Horde · PvP  |  Manual trading intelligence  |  v'+VERSION,style='Hint.TLabel').pack(anchor='w',pady=(3,0))
-        ttk.Button(top,text='Export for ChatGPT',style='Accent.TButton',command=self.export).pack(side='right',padx=(8,0))
+        ttk.Label(left,text='EU · Horde · PvP  |  Automatic market analysis  |  v'+VERSION,style='Hint.TLabel').pack(anchor='w',pady=(3,0))
+        ttk.Button(top,text='Export ZIP',style='Accent.TButton',command=self.export).pack(side='right',padx=(8,0))
         ttk.Button(top,text='Refresh file',command=self.refresh).pack(side='right',padx=(8,0))
         ttk.Button(top,text='Check updates',command=self.check_updates).pack(side='right',padx=(8,0))
         cards=ttk.Frame(outer);cards.pack(fill='x',pady=(24,20))
         self.card_vars={}
-        for key,label in [('cash','Last saved wallet'),('profit','Realised profit'),('count','Items priced'),('scan','Last scan'),('signals','Discount / price alerts')]:
+        for key,label in [('cash','Wallet'),('profit','Realised profit'),('orders','Plan orders'),('scan','Last scan'),('link','Data link')]:
             card=ttk.Frame(cards,style='Card.TFrame',padding=(17,14));card.pack(side='left',fill='both',expand=True,padx=(0,9))
             ttk.Label(card,text=label,style='CardName.TLabel').pack(anchor='w')
             v=tk.StringVar(value='—');self.card_vars[key]=v
             ttk.Label(card,textvariable=v,style='CardValue.TLabel').pack(anchor='w',pady=(7,0))
         self.tabs=ttk.Notebook(outer);self.tabs.pack(fill='both',expand=True)
+        self.strategy_tab=ttk.Frame(self.tabs)
         self.market_tab=ttk.Frame(self.tabs);self.signal_tab=ttk.Frame(self.tabs)
         self.movers_tab=ttk.Frame(self.tabs)
         self.book_tab=ttk.Frame(self.tabs)
@@ -103,13 +132,14 @@ class App(tk.Tk):
         self.trades_tab=ttk.Frame(self.tabs);self.settings_tab=ttk.Frame(self.tabs)
         self.calc_tab=ttk.Frame(self.tabs)
         self.help_tab=ttk.Frame(self.tabs)
-        for frame,label in [(self.market_tab,'MARKET'),(self.book_tab,'ORDER BOOK'),(self.vendor_tab,'VENDOR FLIPS'),(self.movers_tab,'MARKET MOVERS'),(self.signal_tab,'OPPORTUNITIES'),(self.watch_tab,'WATCHLIST'),
+        for frame,label in [(self.strategy_tab,'STRATEGY'),(self.market_tab,'MARKET'),(self.book_tab,'ORDER BOOK'),(self.vendor_tab,'VENDOR FLIPS'),(self.movers_tab,'MARKET MOVERS'),(self.signal_tab,'OPPORTUNITIES'),(self.watch_tab,'WATCHLIST'),
                              (self.activity_tab,'AUTO ACTIVITY'),(self.trades_tab,'TRADE JOURNAL'),(self.calc_tab,'FLIP CALCULATOR'),(self.settings_tab,'SETTINGS'),(self.help_tab,'HOW IT WORKS')]:
             self.tabs.add(frame,text=label)
-        self._market_tab();self._book_tab();self._vendor_tab();self._movers_tab();self._signal_tab();self._watch_tab();self._trades_tab();self._activity_tab();self._calc_tab();self._settings_tab();self._help_tab()
+        self._strategy_tab();self._market_tab();self._book_tab();self._vendor_tab();self._movers_tab();self._signal_tab();self._watch_tab();self._trades_tab();self._activity_tab();self._calc_tab();self._settings_tab();self._help_tab()
         status=ttk.Frame(outer);status.pack(fill='x',pady=(12,0))
         ttk.Label(status,textvariable=self.status_var,style='Hint.TLabel').pack(side='left')
-        ttk.Label(status,text='AH updates reach Windows after /reload • no automated trading',style='Hint.TLabel').pack(side='right')
+        self.link_detail_var=tk.StringVar(value='Link: waiting for the auction house')
+        ttk.Label(status,textvariable=self.link_detail_var,style='Hint.TLabel').pack(side='right')
         self.search_var.trace_add('write',lambda *_:self._update_tables())
     def _make_tree(self,parent,cols,widths):
         box=ttk.Frame(parent);box.pack(fill='both',expand=True)
@@ -122,6 +152,107 @@ class App(tk.Tk):
         tree.tag_configure('signal',background='#234435',foreground='#b9f2d3')
         tree.tag_configure('alternate',background='#1a293c')
         return tree
+    def _strategy_tab(self):
+        head=ttk.Frame(self.strategy_tab,padding=(0,14,0,4));head.pack(fill='x')
+        self.plan_header_var=tk.StringVar(value='Waiting for a full listing. Open the auction house, or AHledger or the Bridge will supply one after a /reload.')
+        ttk.Label(head,textvariable=self.plan_header_var,wraplength=880).pack(side='left',anchor='w')
+        ttk.Button(head,text='Open exports folder',command=self.open_exports).pack(side='right')
+        ttk.Button(head,text='Analyse now',command=lambda:self.autopilot.request_analysis()).pack(side='right',padx=8)
+        self.plan_notes_var=tk.StringVar(value='')
+        ttk.Label(self.strategy_tab,textvariable=self.plan_notes_var,style='Hint.TLabel',wraplength=1200).pack(anchor='w',pady=(0,8))
+        cols={'action':'ACTION','name':'ITEM','ask':'ASK','limit':'PAY UP TO','target':'LIST AT','units':'MAX UNITS','sold':'SOLD/H','book':'FOR SALE','net':'NET','hours':'HOURS','grade':'GRADE','why':'WHY'}
+        self.plan_tree=self._make_tree(self.strategy_tab,cols,{'action':80,'name':205,'ask':70,'limit':80,'target':70,'units':80,'sold':65,'book':75,'net':55,'hours':60,'grade':55,'why':420})
+        self.plan_tree.column('action',anchor='w');self.plan_tree.column('why',anchor='w',stretch=True);self.plan_tree.column('grade',anchor='center')
+        self.plan_tree.tag_configure('avoid',foreground=RED)
+        self.plan_tree.tag_configure('muted',foreground=MUTED)
+        ttk.Label(self.strategy_tab,text='Each order is a limit: when something lists at or under PAY UP TO, the Confirm button appears. Grade C means under a day of history, so margins are higher and sizes smaller. Grades rise as calls prove out.',
+                  style='Hint.TLabel',wraplength=1200).pack(anchor='w',pady=(8,0))
+
+    def _show_plan(self,result):
+        plan=result['plan'];summary=plan['summary'];scoring=plan['scoring']
+        self.plan_result=result
+        scored=(f"Past calls: {scoring['won']} won, {scoring['lost']} lost." if scoring.get('scored')
+                else f"Past calls: {scoring.get('calls',0)} placed, none played out yet.")
+        self.plan_header_var.set(f"{summary['state']}: {summary['index_change_pct']:+.2f}% over {summary['hours_observed']}h, "
+            f"{summary['rising']} up, {summary['falling']} down, about {fmt_copper(summary['turnover_copper_per_hour'])} sold per hour.   {scored}   "
+            f"Free cash {fmt_copper(plan['free_cash'])}.   Plan rev {result['rev']}.")
+        self.plan_notes_var.set(('Analyst notes: '+plan['notes_summary']) if plan.get('notes_summary') else '')
+        self.plan_tree.delete(*self.plan_tree.get_children())
+        orders=0
+        for c in plan['calls']:
+            if c.action in ('VENDOR','BUY NOW','LIMIT'):orders+=1
+            elif c.action!='AVOID':continue
+            tag=('signal',) if c.action in ('VENDOR','BUY NOW') else ('avoid',) if c.action=='AVOID' else ()
+            self.plan_tree.insert('',tk.END,values=(c.action,c.name,fmt_copper(c.ask),fmt_copper(c.limit) if c.limit else '—',
+                fmt_copper(c.target) if c.target else '—',c.max_units or '—',f'{c.sold_per_hour:.0f}',c.units,
+                f'{100*c.margin:.0f}%' if c.margin else '—',f'{c.fill_hours:.1f}' if c.fill_hours else '—',c.grade,c.why),tags=tag)
+        self.card_vars['orders'].set(str(orders))
+
+    def open_exports(self):
+        folder=exports_dir(user_data_dir());folder.mkdir(parents=True,exist_ok=True)
+        if os.name=='nt':os.startfile(folder)
+        else:self.status_var.set(str(folder))
+
+    def _refresh_analysis_context(self):
+        """Runs on the UI thread; the worker reads this copy, since Tk is not thread-safe."""
+        try:cash=int(self.store.get_pref('starting_cash','4338'));reserve=int(self.store.get_pref('reserve','500'))
+        except ValueError:cash,reserve=4338,500
+        wallet=self.store.latest_wallet()
+        if wallet:cash=wallet[1]
+        state=self.link_state
+        if state and time.time()-self.link_state_at<600:cash=state['money']
+        link=getattr(self,'link',None)
+        with self.context_lock:
+            self.analysis_context=dict(cash=cash,reserve=reserve,spec=0.25,addons_root=addons_root(self.source_var.get()),
+                auto_export=self.auto_export_var.get(),link=link.stats.as_dict() if link else None)
+
+    def _analysis_context(self):
+        with self.context_lock:
+            return dict(self.analysis_context)
+
+    def _item_name(self,item_id):
+        row=self.store.db.execute('SELECT name FROM names WHERE item_id=?',(str(item_id),)).fetchone()
+        return row[0] if row else f'Item #{item_id}'
+
+    def _poll_link(self):
+        """Fast UI tick: the newest addon state, plus results from the worker."""
+        try:
+            newest=None
+            while True:
+                try:newest=self.link.states.get_nowait()
+                except queue.Empty:break
+            if newest:
+                self.link_state,self.link_state_at=newest,time.time()
+                self.overlay.update(newest,self._item_name(newest['item_id']) if newest['item_id'] else '',fmt_copper)
+            while True:
+                try:self._show_plan(self.autopilot.results.get_nowait())
+                except queue.Empty:break
+            while True:
+                try:self.status_var.set(self.autopilot.messages.get_nowait())
+                except queue.Empty:break
+            self._update_link_status()
+        except Exception as exc:
+            self.status_var.set('Link error: '+str(exc))
+        self.after(50,self._poll_link)
+
+    def _update_link_status(self):
+        stats=self.link.stats
+        age=time.time()-stats.last_frame_at if stats.last_frame_at else None
+        state=self.link_state
+        if age is not None and age<3:
+            card='Live'
+            bits=[f'Link live ({stats.frames} frames, {stats.bad} unreadable, {stats.gaps} gaps)']
+            if state:
+                bits.append(f"{state['rounds']} rounds")
+                if state['queue']:bits.append(f"{state['queue']} queued")
+        elif not stats.window_found:
+            card='No WoW';bits=['Link: WoW is not running']
+        else:
+            card='Waiting';bits=['Link: waiting for the auction house, with the top of the game window visible']
+        if card!=self.card_vars['link'].get():self.card_vars['link'].set(card)
+        text=' · '.join(bits)
+        if text!=self.link_detail_var.get():self.link_detail_var.set(text)
+
     def _market_tab(self):
         controls=ttk.Frame(self.market_tab,padding=(0,14,0,10));controls.pack(fill='x')
         ttk.Label(controls,text='Find item',style='Hint.TLabel').pack(side='left')
@@ -376,13 +507,17 @@ class App(tk.Tk):
         self._setting(frame,'GitHub updates (owner/repo)',self.repo_var)
         ttk.Checkbutton(frame,text='Keep existing in-game Forever Trader Bridge synced to app updates',
                         variable=self.sync_bridge_var).pack(anchor='w',pady=(7,0))
+        ttk.Checkbutton(frame,text='Windows Confirm button when the cursor is outside WoW (one click sends one key press)',
+                        variable=self.overlay_var).pack(anchor='w',pady=(4,0))
+        ttk.Checkbutton(frame,text='Write an export ZIP every 15 minutes when there is new data',
+                        variable=self.auto_export_var).pack(anchor='w',pady=(4,0))
         ttk.Button(frame,text='Save settings and scan',style='Accent.TButton',command=self.apply_settings).pack(anchor='w',pady=18)
         ttk.Label(frame,text='Example: 43s 38c = 4338 copper, reserve 5s = 500 copper.',style='Hint.TLabel').pack(anchor='w')
         ttk.Label(frame,text='Updates are checked on startup and roughly every 20 minutes; installation requires confirmation.',style='Hint.TLabel').pack(anchor='w',pady=4)
-        ttk.Label(frame,text='No login credentials or auction-house data are uploaded automatically.',style='Hint.TLabel').pack(anchor='w')
+        ttk.Label(frame,text='Nothing is uploaded. Exports stay in the exports folder on this PC.',style='Hint.TLabel').pack(anchor='w')
     def _help_tab(self):
         frame=ttk.Frame(self.help_tab,padding=20);frame.pack(fill='both',expand=True)
-        help_text='''GETTING STARTED\n\n1. In WoW Forever, open the Auction House → Auctionator → Full Scan.\n2. Install bundled wow_addon/ForeverTraderBridge into _forever_/Interface/AddOns.\n   Search items normally in auxForever; the bridge records detail-query price tiers.\n   Type /reload (or log out) to write both addons' data to disk.\n3. In Settings, select _forever_\\WTF\\Account\\<account>\\SavedVariables\\Auctionator.lua.\n4. In Settings, select ForeverTraderBridge.lua from that same SavedVariables folder.\n   Optional: select auxForever.lua to resolve additional item names.\n5. The desktop app automatically detects later saved-file changes every 4 seconds.\n   Use the WATCHLIST tab for a saved-snapshot price threshold and local audible alert.\n6. When you want my analysis, click Export for ChatGPT and upload the ZIP in our chat.\n\nUNDERSTAND THE SIGNALS\n\nBASELINE: first observation; do not treat it as a deal.\nWATCH: has price history but not a sufficiently strong discount.\nRECHECK: current minimum at least 20% below prior scan median and fits bankroll.\n\nYou can rename unidentified IDs in MARKET. Price targets alert on a NEW snapshot.\nEvery listed price is an observed minimum, not a live executable order.\nORDER BOOK shows actual price tiers from searches you performed, but never transactions.\nINSPECT requires fresh, complete commodity results, thin cheapest tier, and bankroll fit.\nPrices are scenarios, not fair values. Individual stack auctions require manual evaluation.\nAuctionator does not reveal completed sales. This app cannot know actual sell-through.\nMultiple scans on the same day may be merged by Auctionator's own daily buckets,\nbut the app separately saves snapshots after every changed SavedVariables write.\n\nTRADING\n\nRecord manual buys and sells to track holdings and estimated after-fee realised P&L.\nAlways double-check the posted stack sizes and deposit before buying/relisting.\nThe default faction AH sales fee assumption is 5%.\nNever buy solely from the app's signal: check the listing in WoW.\n\nUPDATES\n\nPublish tagged Windows builds in your configured GitHub repository.\nThe EXE checks GitHub Releases for a newer stable version and can install it\nafter your confirmation. Source launches can't self-replace.\nNo updates are pushed automatically by ChatGPT; new releases must be published.\n'''
+        help_text='''HOW IT RUNS\n\nStart this app, then open the auction house in WoW. That is all.\nThe addon opens auxForever's Sniper and starts it, records the market and sends it here over the\ncolour strip at the top of the game window. Keep that strip visible. No /reload is needed.\nThe STRATEGY tab reruns as data arrives. An export ZIP is written every 15 minutes when there is\nnew data, and a Claude Code chat open on this PC can review them (type /ft-review).\n\nTHE CONFIRM BUTTON\n\nA deal puts a Confirm button at your cursor. One press buys every unit of a stackable item under\nthe limit. Gear takes one press per auction, because the game requires it. A mouse-wheel notch\nover the button counts as a press too. Right-click skips the deal.\nBelow-vendor deals may use all your cash except the reserve. Other deals get a quarter of free\ncash at most, and the plan's unit cap.\nIf your cursor is outside WoW, a Windows button appears instead. Each click sends one key press.\n\nIn game: /ft diag shows what is working. /ft for all commands.\n\nOLDER SIGNALS\n\nBASELINE: first observation; do not treat it as a deal.\nWATCH: has price history but not a sufficiently strong discount.\nRECHECK: current minimum at least 20% below prior scan median and fits bankroll.\n\nYou can rename unidentified IDs in MARKET. Price targets alert on a NEW snapshot.\nEvery listed price is an observed minimum, not a live executable order.\nORDER BOOK shows actual price tiers from searches you performed, but never transactions.\nINSPECT requires fresh, complete commodity results, thin cheapest tier, and bankroll fit.\nPrices are scenarios, not fair values. Individual stack auctions require manual evaluation.\nAuctionator does not reveal completed sales. This app cannot know actual sell-through.\nMultiple scans on the same day may be merged by Auctionator's own daily buckets,\nbut the app separately saves snapshots after every changed SavedVariables write.\n\nTRADING\n\nRecord manual buys and sells to track holdings and estimated after-fee realised P&L.\nAlways double-check the posted stack sizes and deposit before buying/relisting.\nThe default faction AH sales fee assumption is 5%.\nNever buy solely from the app's signal: check the listing in WoW.\n\nUPDATES\n\nThe app checks GitHub Releases for a newer version and asks before installing it.\n'''
         t=tk.Text(frame,bg=PANEL,fg=FG,insertbackground=FG,relief='flat',borderwidth=0,wrap='word',font=('Consolas',10),padx=16,pady=15)
         t.insert('1.0',help_text);t.configure(state='disabled');t.pack(fill='both',expand=True)
     def choose_auctionator(self):
@@ -396,6 +531,9 @@ class App(tk.Tk):
         if f:self.aux_var.set(f);self.apply_settings()
     def _save_settings(self):
         self.store.set_pref('sync_bridge','1' if self.sync_bridge_var.get() else '0')
+        self.store.set_pref('windows_button','1' if self.overlay_var.get() else '0')
+        self.store.set_pref('auto_export','1' if self.auto_export_var.get() else '0')
+        if hasattr(self,'overlay'):self.overlay.enabled=self.overlay_var.get()
         for key,var in [('auctionator_path',self.source_var),('aux_path',self.aux_var),('bridge_path',self.bridge_var),('repo',self.repo_var),
                         ('starting_cash',self.cash_var),('reserve',self.reserve_var)]:self.store.set_pref(key,var.get())
     def apply_settings(self):
@@ -416,6 +554,27 @@ class App(tk.Tk):
         try:self.refresh(silent=True)
         except Exception as exc:self.status_var.set('Monitor error: '+str(exc))
         self.after(4000,self._poll)
+    def _refresh_market_files(self):
+        """Vendor prices from aux, and full listings AHledger saved. Only what changed is read."""
+        path_text=self.source_var.get().strip()
+        if not path_text:return
+        folder=Path(path_text).parent
+        sources=[('auxForever.lua',Path(self.aux_var.get().strip()) if self.aux_var.get().strip() else folder/'auxForever.lua'),
+                 ('AHledger.lua',folder/'AHledger.lua')]
+        for name,path in sources:
+            try:stat=path.stat()
+            except OSError:continue
+            sig=(stat.st_mtime_ns,stat.st_size)
+            if self.last_market_files.get(name)==sig:continue
+            self.last_market_files[name]=sig
+            if name=='auxForever.lua':
+                marketdata.ingest_items(self.store.db,marketdata.parse_aux_items(path))
+            else:
+                added=0
+                for ts,items in sorted(marketdata.parse_ahledger_scans(path),key=lambda s:s[0]):
+                    added+=marketdata.ingest_snapshot(self.store.db,ts,items,True,'ahledger')
+                if added:self.autopilot.request_analysis()
+
     def _refresh_bridge(self,silent=False):
         source=self.bridge_var.get().strip()
         if not source and self.source_var.get().strip():
@@ -429,6 +588,11 @@ class App(tk.Tk):
             payload=parse_bridge(path)
             imported=self.store.ingest_books(payload)
             activity=self.store.ingest_activity(payload)
+            for bucket,data in payload.get('bars',[]):
+                marketdata.ingest_bars(self.store.db,bucket,marketdata.parse_bridge_bars(data))
+            for ts,data in payload.get('snapshots',[]):
+                if marketdata.ingest_snapshot(self.store.db,ts,marketdata.parse_bridge_snapshot(data),True,'bridge'):
+                    self.autopilot.request_analysis()
             self.last_bridge_sig=sig
             if imported or activity['new_events'] or activity['wallets'] or activity['wallet_changes']:
                 self.status_var.set(f'Bridge: {imported} books, {activity["new_events"]} events '
@@ -440,6 +604,9 @@ class App(tk.Tk):
             return 0
 
     def refresh(self,silent=False):
+        self._refresh_analysis_context()
+        try:self._refresh_market_files()
+        except (OSError,ValueError) as exc:self.status_var.set('Could not read market files: '+str(exc))
         bridge_imported=self._refresh_bridge(silent)
         path_text=self.source_var.get().strip()
         if not path_text:
@@ -491,11 +658,10 @@ class App(tk.Tk):
         ledger=self.store.ledger()
         wallet=self.store.latest_wallet()
         cash=wallet[1] if wallet else starting-ledger['spent']+ledger['sales_net']
+        if self.link_state and time.time()-self.link_state_at<600:cash=self.link_state['money']
         self.card_vars['cash'].set(fmt_copper(cash))
         self.card_vars['profit'].set(fmt_copper(ledger['realized']))
-        self.card_vars['count'].set(str(latest[3]) if latest else '—')
         self.card_vars['scan'].set(time.strftime('%d %b %H:%M UTC',time.gmtime(latest[1])) if latest else '—')
-        self.card_vars['signals'].set(str(sum(1 for r in self.market_rows if r['signal']=='RECHECK' or r['watch_alert'])))
     def _update_tables(self):
         try:cash=int(self.store.get_pref('starting_cash','4338'));reserve=int(self.store.get_pref('reserve','500'))
         except ValueError:cash=4338;reserve=500
@@ -609,11 +775,11 @@ class App(tk.Tk):
         messagebox.showinfo('Recorded',f'{side} ({channel}): {qty} x {item_id} @ {fmt_copper(price)} each.\nThis has NOT placed a WoW order.')
     def export(self):
         initial='forever-market-'+time.strftime('%Y%m%d-%H%M%S')+'.zip'
-        dest=filedialog.asksaveasfilename(title='Export for ChatGPT',defaultextension='.zip',initialfile=initial,filetypes=[('ZIP files','*.zip')])
+        dest=filedialog.asksaveasfilename(title='Export ZIP',defaultextension='.zip',initialfile=initial,filetypes=[('ZIP files','*.zip')])
         if not dest:return
-        try:self.store.export_bundle(Path(dest));self.status_var.set('Export ready: '+dest)
+        try:self.store.export_bundle(Path(dest),analysis_dir=user_data_dir()/'analysis',link_status=self.link.stats.as_dict());self.status_var.set('Export ready: '+dest)
         except Exception as e:messagebox.showerror('Export error',str(e));return
-        messagebox.showinfo('Export ready','Upload this ZIP in our ChatGPT conversation for detailed trade analysis:\n'+dest)
+        messagebox.showinfo('Export ready','Export written:\n'+dest)
     def _async_update_check(self):
         self.check_updates(silent=True)
         self.after(20*60*1000,self._async_update_check)
@@ -659,9 +825,13 @@ class App(tk.Tk):
         self._close()
 
     def _close(self):
-        try: self.store.close()
+        try:
+            self.autopilot.stop();self.link.stop()
+            self.autopilot.join(timeout=2);self.link.join(timeout=2)
+            self.store.close()
         finally: self.destroy()
 
 
 def main():
+    set_dpi_aware()
     app=App();app.mainloop()

@@ -1,42 +1,41 @@
-# Forever Trader — next-session handoff
+# Forever Trader: next-session handoff
 
-**World:** WoW Forever 1.60.1, EU Horde PvP, using auxForever Sniper and Auctionator.
+**World:** WoW Forever 1.60.1, EU Horde PvP. auxForever, AHledger and Auctionator installed.
 
-**Goal:** Maximize actual realized gold profit. Prefer riskless NPC-vendor arbitrage until there is enough independent price history to test AH resale liquidity.
+**Goal:** maximise realised gold. Below-vendor flips first; resale limit orders as the evidence grows.
 
-**Last balance:** `/ftmoney` reported **5,497 copper (54s 97c)**. The previous manual balance was **5,611 copper (56s 11c)**. This is a timestamp/reconciliation gap, not proof of a loss. Initial trading bankroll was **4,338 copper**. Actual profit depends on whether all wallet changes came from trading.
+**Bankroll:** 54s 97c at last saved wallet (2026-11-05), started at 43s 38c.
 
-**Latest exported market data:** 845 catalog items, 20 detailed order books, 17 transaction observations; 2 confirmed purchases, 0 confirmed NPC sales and 15 review events on the old Bridge. No speculative AH buys recommended from that stale snapshot.
+## State of v0.4.0
 
-## New code in v0.3.3 (includes v0.3.2)
+Built and tested in a simulated client that runs the real auxForever, and run live for the first time on 2026-11-05: see "Live validation". A local `HANDOFF.md`, if present, has the full picture.
 
-- Better NPC sale matching: wait until bags and cash match, and use cached item-link vendor payouts.
-- AH commodity purchase evidence from the player's quote/confirm and game purchase events.
-- Wallet delta history, available under the desktop app and `wallet_changes.csv` in exports.
-- Optional quick-vendor-sniper cursor button patch for auxForever's current Sniper UI. This is **not a bot**. It offers a user-click to select an active below-vendor deal, awaits auxForever's normal live refresh, then forwards subsequent manual clicks into auxForever's existing Buy / server-price Confirm flow.
-- Main branch CI should auto-publish *new* version tags after a successful Windows run. Each app update still asks the player before installation.
+## Next steps
 
-## Next steps when returning
+1. Finish anything still open under "Live validation".
+2. Let the data build. Grades move from C to B after a day of AH-open time, and A needs 3 days plus a record of scored calls. Watch "How past calls did" in the report before trusting limits.
+3. Run `/ft-review` in a Claude Code chat, or ask it to watch the exports folder.
 
-1. Start Forever Trader and accept the v0.3.3 update when offered. Verify Bridge sync is enabled in Settings; `/reload` WoW after update, or restart WoW.
-2. Optional quick-buy setup (with WoW closed): `powershell -ExecutionPolicy Bypass -File .\INSTALL_QUICK_SNIPE_WINDOWS.ps1`. To undo: run with `-Uninstall`. It modifies only `auxForever\tabs\sniper\frame.lua` and keeps a backup. Use `/ftquick` to toggle the overlay in game.
-3. Stay with Sniper's **1c minimum profit** and **vendor-only purchases** while the historical scans accrue. Confirm price & quantity before buying. Keep 5s available.
-4. Execute a few NEW vendor flips after the Bridge update; type `/ftmoney`, then `/reload` to persist. Export the ZIP in Forever Trader and upload it to ChatGPT.
-5. Compare `wallet_changes.csv`, `automatic_activity.csv`, `wallet_checkpoints.csv` and trade journal against the in-game wallet. Prior receipt ambiguity will not magically disappear; inspect newly captured events.
-6. Run auxForever **Full Scan once per day for at least 3 different days** before relying on historical-price speculative deals. A quoted resale price is not proof of demand.
+## Live validation
 
-## Known limitations
+First live session, 2026-11-05:
 
-- In-game overlay and event timing have **not yet been validated inside the live client**. Turn off the overlay using `/ftquick` or uninstall the patch if buggy.
-- Game addon's SavedVariables only sync to Windows on `/reload` or logout.
-- A player-click is required for each action; no unattended bidding/purchasing.
-- Wallet change totals include potential unrelated repairs, quest money and other activity. Do not equate change in cash to audited trading profit without reconciliation.
+- [x] `getfenv` attaches to aux's Sniper (`/ft diag`)
+- [x] Sniper auto-starts when the AH opens
+- [x] Data strip reads: `/ft linktest` gave 149 of 150 frames, none corrupted
+- [x] Full listing arrives over the link (806 frames; one was lost, so it was stored as partial)
+- [x] Plan slots load, and a newer plan loads while the AH stays open (rev 3 to rev 6, no reload)
+- [x] One press buys a stackable through auto-confirm (dozens of buys, no second press needed)
+- [x] A relayed key reaches WoW: posted numpad divide works without focus; F13-F24 are ignored by the game
+- [x] The Windows button buys: a relayed key press counts as a real press
+- [ ] Mouse-wheel notch counts as a press
+- [x] Gear buys, random-suffix items included (one press per auction)
+- [ ] Some listings (all the Scalping Tomahawk variants) failed with "No longer listed"; the `unselectable` log line records why
+- [x] Receipts: each purchase now gets one CONFIRMED receipt at its quoted price (before the fix, every commodity buy went to REVIEW)
+- [x] The addon's own 15-minute full scan fires live (11:35, complete listing of 841 frames)
 
+## Known limits
 
-## Quick-buy safety and first live validation
-
-- The optional cursor-adjacent button is NOT installed by the desktop auto-updater. With WoW closed, run `powershell -ExecutionPolicy Bypass -File .\INSTALL_QUICK_SNIPE_WINDOWS.ps1`; WoW must be restarted. Use `-Uninstall` to remove it.
-- v0.3.3 fixes a selection bug in v0.3.2. A CHECK click selects and causes auxForever to refresh the live auction. Next click buys an item or asks for a commodity quote; a distinct click confirms that quote.
-- A commodity order is capped at five units. The overlay requires at least 5s cash to remain based on asking prices AND the actual server quote; it disables confirmation for quotes over that cap. Verify the price before clicking.
-- Live-client validation remains outstanding. Try ONE low-value vendor flip first. If any LUA errors or the overlay behaves oddly, toggle `/ftquick` off immediately and uninstall the patch before continuing.
-- Never confuse saved wallet changes with proven realised profit; export new receipts after `/reload` and reconcile.
+- The strip must be visible: covered or minimised WoW means no data until it is back.
+- Plan limits refresh about every 10 minutes while the AH is open, 24 times per UI session.
+- Estimated sales cannot see every relist or cancel, so treat them as a guide.

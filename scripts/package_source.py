@@ -2,10 +2,12 @@
 from __future__ import annotations
 import argparse, pathlib, zipfile, hashlib
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-ALLOW_DIRS=('trader','tests','wow_addon','scripts','.github','tools')
+ALLOW_DIRS=('trader','tests','wow_addon','scripts','.github')
+# Installed copies check an update against the allowlist they already have, so a new
+# top-level path here would make every older copy refuse the release.
 ALLOW_FILES=('app.py','README.md','START_WINDOWS.cmd','START_SILENT_WINDOWS.cmd',
              'BUILD_WINDOWS_EXE.cmd','INSTALL_ADDON_WINDOWS.cmd',
-             'PUBLISH_RELEASE.ps1','SETUP_GITHUB_WINDOWS.ps1','INSTALL_QUICK_SNIPE_WINDOWS.ps1','NEXT_SESSION.md','.gitignore')
+             'PUBLISH_RELEASE.ps1','SETUP_GITHUB_WINDOWS.ps1','NEXT_SESSION.md','.gitignore')
 
 def build(out):
     out=pathlib.Path(out)

@@ -8,3 +8,5 @@ dist/
 *.zip
 ui-preview.png
 .env
+.claude/settings.local.json
+HANDOFF.md

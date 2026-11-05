@@ -1,10 +1,11 @@
-"""Snapshot store, signals, and local trade ledger. No automated WoW actions."""
+"""Snapshot store, signals, local trade ledger and export bundles."""
 from __future__ import annotations
 import sqlite3, json, statistics, time, csv, io, zipfile, hashlib
 from pathlib import Path
 from .auctionator import fmt_copper
 from .seed_names import SEED_NAMES
 from .orderbook import assess
+from . import marketdata
 
 class MarketStore:
     def __init__(self, directory: Path):
@@ -54,6 +55,7 @@ class MarketStore:
         self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_auto_uid ON trades(event_uid)')
         self.db.executemany('INSERT OR IGNORE INTO names (item_id,name) VALUES (?,?)', SEED_NAMES.items())
         self.db.commit()
+        marketdata.ensure_schema(self.db)
         self._repair_duplicate_scan_timestamps()
 
     def close(self):
@@ -360,7 +362,7 @@ class MarketStore:
                 'holdings_qty':holding_qty,'holding_cost':holding_cost,
                 'spent':buycost,'sales_net':sellproceeds,'untracked_sell_qty':unmatched}
 
-    def export_bundle(self, destination: Path, account_details=False):
+    def export_bundle(self, destination: Path, account_details=False, analysis_dir: Path|None=None, link_status: dict|None=None):
         latest=self.overview(); rows=self.market_rows()
         latest_iso=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(latest[1])) if latest else None
         wallet=self.latest_wallet()
@@ -381,7 +383,10 @@ class MarketStore:
                       'Previously completed flips are NOT reconstructed; wallet includes other money changes.',
                       'Vendor sales have no AH commission; ambiguous events never silently affect the ledger.',
                       'SavedVariable writes happen on /reload/logout; file monitoring is not continuous API polling.',
-                      'Order-book price gaps are hypothetical offers, not confirmed buyer demand or realised returns.']}
+                      'Order-book price gaps are hypothetical offers, not confirmed buyer demand or realised returns.',
+                      'flows_recent.csv estimates sales from full listings: stackables sell cheapest-first, so units gone from the front of the book count as sold. It is an estimate, not a trade record.'],
+            'link':link_status or {},
+            'snapshots':self.db.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0]}
         lines=io.StringIO();writer=csv.DictWriter(lines,fieldnames=['id','name','price','qty','history','median','discount','change','previous_price','previous_qty','affordable','signal','potential_net','watch_target','watch_alert']);writer.writeheader();writer.writerows(rows)
         history=io.StringIO();w=csv.writer(history);w.writerow(['scan_id','scan_time','market','item_id','price_copper','quantity'])
         for row in self.db.execute('''SELECT s.id,s.observed_at,s.market,o.item_id,o.price,o.qty FROM observations o JOIN scans s ON o.scan_id=s.id ORDER BY s.id'''):w.writerow(row)
@@ -412,7 +417,28 @@ class MarketStore:
         for row in self.db.execute('''SELECT uid,character,ts,copper,delta,context FROM wallet_changes
                                       ORDER BY CAST(uid AS INTEGER)'''):
             cw.writerow(row)
+        now=int(time.time())
+        flows_csv=io.StringIO();fw=csv.writer(flows_csv)
+        fw.writerow(['ts_from','ts_to','item_id','name','sold_units','sold_value_copper','new_units','relisted_units','expired_units','cancelled_units'])
+        fw.writerows(self.db.execute('''SELECT f.ts_from,f.ts_to,f.item_id,COALESCE(i.name,'Item #'||f.item_id),f.sold_units,f.sold_value,
+            f.new_units,f.relisted_units,f.expired_units,f.cancelled_units FROM flows f LEFT JOIN items i ON i.item_id=f.item_id
+            WHERE f.ts_to>=? ORDER BY f.ts_to''',(now-3*86400,)))
+        snapshots_csv=io.StringIO();sw=csv.writer(snapshots_csv)
+        sw.writerow(['ts','item_id','name','units','listings','min_unit','robust_ask','median_ask','vendor','stack'])
+        sw.writerows(self.db.execute('''SELECT s.ts,s.item_id,COALESCE(i.name,'Item #'||s.item_id),s.units,s.listings,s.min_unit,s.robust,s.median,
+            COALESCE(i.vendor,0),COALESCE(i.stack,1) FROM snapshot_items s LEFT JOIN items i ON i.item_id=s.item_id
+            WHERE s.ts=(SELECT MAX(ts) FROM snapshots) ORDER BY s.units DESC'''))
+        bars_csv=io.StringIO();bw=csv.writer(bars_csv)
+        bw.writerow(['item_id','bar_start','open','high','low','close','quantity','units_out','units_in'])
+        bw.writerows(self.db.execute('SELECT item_id,ts,o,h,l,c,q,out_units,in_units FROM bars WHERE ts>=? ORDER BY ts,item_id',(now-86400,)))
         with zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as z:
+            z.writestr('flows_recent.csv',flows_csv.getvalue())
+            z.writestr('latest_listing.csv',snapshots_csv.getvalue())
+            z.writestr('bars_24h.csv',bars_csv.getvalue())
+            if analysis_dir:
+                for name in ('strategy_report.md','plan.json'):
+                    path=Path(analysis_dir)/name
+                    if path.is_file():z.write(path,name)
             z.writestr('wallet_changes.csv',changes_csv.getvalue())
             z.writestr('automatic_activity.csv',automatic.getvalue())
             z.writestr('wallet_checkpoints.csv',wallets_csv.getvalue())
@@ -423,5 +449,5 @@ class MarketStore:
             z.writestr('market_history.csv',history.getvalue())
             z.writestr('manual_trades.csv',transactions.getvalue())
             z.writestr('README_FOR_ANALYST.txt', 'Targets are user-set watch alerts, NOT executable offers. Observed daily maximum quantity is not sell-through, and an intraday minimum can be stale. Do not infer actual transactions from scan minima.\n')
-            z.writestr('PROMPT.txt','Analyse this WoW Forever Horde EU PvP AH data. Starting cash is 43s 38c. Find cautious but high-upside manual trading opportunities from the attached snapshot/history. Distinguish observed ask prices from completed trades and DO NOT invent live order books, volume or profit. Where order_books.csv exists, use only its measured depth and freshness, and do not treat next price as an actual sale. Calculate break-even resale after 5% AH fee and deposits; provide exact maximum buy prices and which listings I should live-check first. I am happy with aggressive speculation but never recommend spending on invalid/incomplete data.\n')
+            z.writestr('PROMPT.txt','Start with strategy_report.md and plan.json: the engine has already proposed limit orders; check them against flows_recent.csv and latest_listing.csv. Analyse this WoW Forever Horde EU PvP AH data. Starting cash is 43s 38c. Find cautious but high-upside manual trading opportunities from the attached snapshot/history. Distinguish observed ask prices from completed trades and DO NOT invent live order books, volume or profit. Where order_books.csv exists, use only its measured depth and freshness, and do not treat next price as an actual sale. Calculate break-even resale after 5% AH fee and deposits; provide exact maximum buy prices and which listings I should live-check first. I am happy with aggressive speculation but never recommend spending on invalid/incomplete data.\n')
         return destination

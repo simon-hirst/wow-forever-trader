@@ -1,12 +1,15 @@
 """Read only the ForeverTraderBridge SavedVariables table. Never execute Lua.
 
-The in-game addon records result events from normal player-driven searches; disk
-writes only occur on /reload or logout. This parser accepts Lua table literals.
+Disk writes only occur on /reload or logout, so this is the fallback path for data
+the live link missed. This parser accepts Lua table literals.
 """
 from __future__ import annotations
 import re
 from pathlib import Path
 from .auctionator import ParseError
+
+_NAME_KEY=re.compile(rb'([A-Za-z_][A-Za-z_0-9]*)\s*=')
+_NUMBER=re.compile(rb'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?')
 
 class LuaTableReader:
     def __init__(self, data: bytes):
@@ -27,9 +30,14 @@ class LuaTableReader:
         self.char(b'"'); buf=bytearray(); d=self.data
         escapes={ord('n'):10,ord('r'):13,ord('t'):9,ord('a'):7,ord('b'):8,ord('f'):12,ord('v'):11}
         while self.i<len(d):
+            # Long plain runs copy in one go: market snapshots are megabyte strings.
+            quote=d.find(b'"',self.i)
+            if quote<0:break
+            slash=d.find(b'\\',self.i,quote)
+            stop=slash if slash>=0 else quote
+            buf+=d[self.i:stop];self.i=stop
             c=d[self.i];self.i+=1
             if c==34:return buf.decode('utf-8','replace')
-            if c!=92: buf.append(c); continue
             if self.i>=len(d):break
             c=d[self.i];self.i+=1
             if 48<=c<=57:
@@ -53,9 +61,9 @@ class LuaTableReader:
                 if d[self.i:self.i+1]==b'[':
                     self.i+=1; key=self.value();self.char(b']');self.char(b'=');value=self.value()
                 else:
-                    m=re.match(rb'([A-Za-z_][A-Za-z_0-9]*)\s*=',d[self.i:])
+                    m=_NAME_KEY.match(d,self.i)
                     if m:
-                        key=m.group(1).decode();self.i+=m.end();value=self.value()
+                        key=m.group(1).decode();self.i=m.end();value=self.value()
                     else:
                         key=auto;auto+=1;value=self.value()
                 result[key]=value
@@ -64,9 +72,9 @@ class LuaTableReader:
                 elif d[self.i:self.i+1]!=b'}':raise ParseError('Expected table delimiter at '+str(self.i))
             self.depth-=1;return result
         if d[self.i:self.i+1]==b'"':return self.quoted()
-        m=re.match(rb'-?\d+(?:\.\d+)?',d[self.i:])
+        m=_NUMBER.match(d,self.i)
         if m:
-            self.i+=m.end();s=m.group().decode();return float(s) if '.' in s else int(s)
+            self.i=m.end();s=m.group().decode();return float(s) if ('.' in s or 'e' in s or 'E' in s) else int(s)
         for lit,val in ((b'true',True),(b'false',False),(b'nil',None)):
             if d[self.i:self.i+len(lit)]==lit:
                 self.i+=len(lit);return val
@@ -74,7 +82,7 @@ class LuaTableReader:
 
 def parse_bridge(path: Path) -> dict:
     data=Path(path).read_bytes()
-    if len(data)>16*1024*1024: raise ParseError('Bridge SavedVariables file is unexpectedly large')
+    if len(data)>48*1024*1024: raise ParseError('Bridge SavedVariables file is unexpectedly large')
     m=re.search(rb'\bForeverTraderBridgeDB\s*=\s*',data)
     if not m:raise ParseError('ForeverTraderBridgeDB not found')
     reader=LuaTableReader(data);reader.i=m.end();table=reader.value()
@@ -151,5 +159,14 @@ def parse_bridge(path: Path) -> dict:
             changes.append(dict(uid=uid,character=character,ts=ts,
                                 copper=copper,delta=delta,context=context))
         except (TypeError,ValueError,OverflowError):continue
+    bars=[]
+    for _,raw in (table.get('bars') or {}).items():
+        if isinstance(raw,dict) and isinstance(raw.get('t'),int) and isinstance(raw.get('d'),str):
+            bars.append((raw['t'],raw['d']))
+    snapshots=[]
+    for _,raw in (table.get('snapshots') or {}).items():
+        if isinstance(raw,dict) and isinstance(raw.get('ts'),int) and isinstance(raw.get('data'),str):
+            snapshots.append((raw['ts'],raw['data']))
     return {'books':books,'count':len(books),'market':str(table.get('market') or 'PvP'),
-            'activity':activity,'wallets':wallets,'wallet_changes':changes}
+            'activity':activity,'wallets':wallets,'wallet_changes':changes,'bars':bars,'snapshots':snapshots,
+            'log':[str(v) for _,v in sorted((table.get('log') or {}).items()) if isinstance(v,str)]}

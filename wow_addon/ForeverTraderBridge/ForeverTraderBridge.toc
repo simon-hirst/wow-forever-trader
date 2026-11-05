@@ -1,6 +1,13 @@
 ## Interface: 16001
 ## Title: Forever Trader Bridge
-## Notes: Passive Auction House depth recorder for Forever Trader; no automatic queries or trades
-## Version: 0.3.2
+## Notes: Automatic AH market recorder, cursor Confirm button and data link for the Forever Trader desktop app
+## Version: 0.4.0
 ## SavedVariables: ForeverTraderBridgeDB
+## OptionalDeps: auxForever, Auctionator, AHledger
 ForeverTraderBridge.lua
+Link.lua
+Market.lua
+Plan.lua
+Aux.lua
+Snipe.lua
+Main.lua
