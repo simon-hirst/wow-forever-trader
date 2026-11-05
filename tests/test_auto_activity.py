@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 import pathlib, tempfile, unittest, zipfile, json, sys
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 from trader.bridge import parse_bridge
@@ -22,12 +23,12 @@ FIXTURE=r'''ForeverTraderBridgeDB = {
 
 class TestAutoActivity(unittest.TestCase):
     def test_receipt_dedup_verified_costs_and_wallet(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as resources:
             path=pathlib.Path(directory)
             fixture=path/'ForeverTraderBridge.lua';fixture.write_text(FIXTURE)
             parsed=parse_bridge(fixture)
             self.assertEqual(len(parsed['activity']),4)
-            s=MarketStore(path/'data')
+            s=resources.enter_context(MarketStore(path/'data'))
             self.assertEqual(s.ingest_activity(parsed)['confirmed'],2)
             self.assertEqual(s.ingest_activity(parsed)['new_events'],0)
             ledger=s.ledger()
@@ -51,18 +52,18 @@ class TestAutoActivity(unittest.TestCase):
                 summary=json.loads(z.read('summary.json'))
                 self.assertEqual(summary['automatic_events_unverified'],1)
                 self.assertEqual(summary['latest_saved_wallet']['copper'],5477)
-            s.db.close()
-            again=MarketStore(path/'data')
+            s.close()
+            again=resources.enter_context(MarketStore(path/'data'))
             self.assertEqual(again.ledger()['vendor_realized'],14)
             self.assertEqual(again.ingest_activity(parsed)['confirmed'],0)
             self.assertEqual(again.ledger()['realized'],14)
-            again.db.close()
+            again.close()
 
     def test_source_updates_allow_only_known_project_files(self):
         self.assertFalse(is_allowed('../WTF/Account/secret.lua'))
         self.assertFalse(is_allowed('WTF/Account/secret.lua'))
         self.assertFalse(is_allowed('trader\\evil.py'))
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory() as td, ExitStack() as resources:
             p=pathlib.Path(td);z=p/'safe.zip'
             with zipfile.ZipFile(z,'w') as arch:
                 arch.writestr('trader/version.py','VERSION=1')
