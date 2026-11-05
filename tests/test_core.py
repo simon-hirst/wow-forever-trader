@@ -1,9 +1,18 @@
+from contextlib import ExitStack
 import tempfile, unittest, pathlib, sys, zipfile
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 from trader.auctionator import parse_auctionator,parse_aux_names,fmt_copper,_Cbor,ParseError
 from trader.market import MarketStore
 
 class TestCore(unittest.TestCase):
+    def test_store_context_manager_closes_database(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            with MarketStore(pathlib.Path(d)) as store:
+                store.set_pref('test','yes')
+            with self.assertRaises(sqlite3.ProgrammingError):
+                store.db.execute('SELECT 1')
+
     def test_money(self):
         self.assertEqual(fmt_copper(4338),'43s 38c')
         self.assertEqual(fmt_copper(2838),'28s 38c')
@@ -18,7 +27,7 @@ class TestCore(unittest.TestCase):
         cbor = bytes.fromhex('a143373635a34161a14432353030182a4168a144323530300a416d0a')
         escaped = ''.join(('\\%03d' % x) if x<32 or x==34 or x==92 else chr(x) for x in cbor)
         content = 'AUCTIONATOR_SAVEDVARS = { ["TimeOfLastBrowseScan"] = 1793852451, }\nAUCTIONATOR_PRICE_DATABASE = { ["__dbversion"] = 8, ["PvP"] = "' + escaped + '", }\n'
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, ExitStack() as resources:
             f=pathlib.Path(d)/'Auctionator.lua'
             f.write_bytes(content.encode('latin-1'))
             snapshot=parse_auctionator(f)
@@ -27,8 +36,8 @@ class TestCore(unittest.TestCase):
             self.assertEqual(snapshot['items']['765']['quantity'],42)
 
     def test_history_and_exports(self):
-        with tempfile.TemporaryDirectory() as d:
-            store=MarketStore(pathlib.Path(d)); item={'id':'2589','price':20,'quantity':22,'daily_high':{},'daily_low':{},'daily_quantity':{}}
+        with tempfile.TemporaryDirectory() as d, ExitStack() as resources:
+            store=resources.enter_context(MarketStore(pathlib.Path(d))); item={'id':'2589','price':20,'quantity':22,'daily_high':{},'daily_low':{},'daily_quantity':{}}
             snap={'market':'PvP','scan_time':1793852451,'items':{'2589':item},'count':1}
             self.assertTrue(store.ingest(snap,'hash1'))
             self.assertFalse(store.ingest(snap,'hash1'))
@@ -56,8 +65,8 @@ if __name__=='__main__':unittest.main()
 
 class TestWatchlist(unittest.TestCase):
     def test_watchlist_signal_and_export(self):
-        with tempfile.TemporaryDirectory() as d:
-            store=MarketStore(pathlib.Path(d))
+        with tempfile.TemporaryDirectory() as d, ExitStack() as resources:
+            store=resources.enter_context(MarketStore(pathlib.Path(d)))
             store.set_watch('2589',15,'Check linen cloth')
             item={'id':'2589','price':12,'quantity':200}
             snapshot={'market':'PvP','scan_time':1793852451,'items':{'2589':item},'count':1}
