@@ -51,7 +51,7 @@ function Aux.StatsLine()
     end
     return string.format('browses %d, completed rounds %d, last %d items, browse %.1fs (first page %.1fs, %d page events), verification %s, priority candidates %d, current %s %.1fs, speed %s',
         a.browses, finished, a.rows, a.browse, a.firstPage, a.pages,
-        phase == 'checking candidates' and 'active' or string.format('last %.1fs', a.verify),
+        env and env.active and env.checking and 'active' or string.format('last %.1fs', a.verify),
         a.priorities, phase, elapsed, speed)
 end
 
