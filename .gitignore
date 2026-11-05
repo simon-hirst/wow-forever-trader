@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.spec
+build/
+dist/
+*.sqlite3
+*.db
+*.zip
+ui-preview.png
+.env

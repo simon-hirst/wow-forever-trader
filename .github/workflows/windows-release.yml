@@ -1,0 +1,48 @@
+name: Build Windows desktop app and publish auto-update release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install packager
+        run: python -m pip install --upgrade pyinstaller
+      - name: Test parsing and analytics
+        run: python -m unittest discover -s tests -v
+      - name: Build Windows 11 EXE
+        run: pyinstaller --clean --noconfirm --onefile --windowed --name ForeverTrader --paths . --add-data "wow_addon;wow_addon" app.py
+      - name: Generate SHA256 update manifest
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/ForeverTrader.exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path dist/ForeverTrader.exe.sha256 -Value "$hash  ForeverTrader.exe" -NoNewline
+      - name: Package Python-source auto-update
+        run: python scripts/package_source.py
+      - name: Store build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForeverTrader-Windows-x64
+          path: |
+            dist/ForeverTrader.exe
+            dist/ForeverTrader.exe.sha256
+            ForeverTrader-source.zip
+            ForeverTrader-source.zip.sha256
+      - name: Publish release for app auto-updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ForeverTrader.exe
+            dist/ForeverTrader.exe.sha256
+            ForeverTrader-source.zip
+            ForeverTrader-source.zip.sha256
+          generate_release_notes: true
