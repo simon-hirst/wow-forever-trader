@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 import io, sys, json, time, zipfile, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -19,14 +20,14 @@ class TestBridge(unittest.TestCase):
           ["4360"] = { item_id=4360, name="Test\\\"Item", kind="item",ts=1793856000,full=false,levels={{p=100,q=1}} },
      } }
 '''
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, ExitStack() as resources:
             path=Path(d)/'ForeverTraderBridge.lua';path.write_bytes(lua)
             parsed=parse_bridge(path)
         self.assertEqual(parsed['count'],2)
         self.assertEqual(parsed['books']['2841']['levels'],[(245,12),(300,24),(333,51)])
         self.assertEqual(parsed['books']['4360']['name'],'Test"Item')
     def test_reject_invalid_lua(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, ExitStack() as resources:
             path=Path(d)/'bad.lua';path.write_text('ForeverTraderBridgeDB = { version = 1, books = {abc = (require "os") }}')
             with self.assertRaises(ParseError):parse_bridge(path)
     def test_real_screenshots_should_all_skip(self):
@@ -53,8 +54,8 @@ class TestBridge(unittest.TestCase):
         vendor['kind']='item'
         self.assertEqual(assess(vendor,4338,500,now=NOW)['status'],'VENDOR CHECK')
     def test_ingest_exports_and_persists(self):
-        with tempfile.TemporaryDirectory() as d:
-            store=MarketStore(Path(d))
+        with tempfile.TemporaryDirectory() as d, ExitStack() as resources:
+            store=resources.enter_context(MarketStore(Path(d)))
             book={'key':'2841','item_id':'2841','name':'Bronze Bar','kind':'commodity',
                 'observed_at':NOW,'full':True,'vendor_copper':1,'total_quantity':20,'levels':[(100,2),(250,4)]}
             payload={'market':'PvP','books':{'2841':book}}
@@ -69,8 +70,8 @@ class TestBridge(unittest.TestCase):
                 self.assertIn('order_books.csv',z.namelist())
                 self.assertIn('Bronze Bar',z.read('order_books.csv').decode())
                 self.assertEqual(json.loads(z.read('summary.json'))['orderbooks_recorded'],1)
-            store.db.close()
-            reopened=MarketStore(Path(d))
+            store.close()
+            reopened=resources.enter_context(MarketStore(Path(d)))
             self.assertEqual(len(reopened.order_book_rows(now=NOW)),1)
 
 if __name__=='__main__':unittest.main()
