@@ -1,4 +1,11 @@
-# Forever Trader v0.3.0 — WoW Forever 1.60.1 desktop market terminal
+# Forever Trader v0.3.1 — WoW Forever 1.60.1 desktop market terminal
+
+## v0.3.1 — Windows release build fix
+
+- Explicit SQLite database lifetime management and guaranteed test cleanup on Windows.
+- Close the app database connection on window close and before applying source updates.
+- Fixes WinError 32 during GitHub Actions tests; no trading or SavedVariables data changes.
+
 
 A **Windows 11 desktop trading-research app** for WoW Forever's Auction House, tested with Auctionator **dbversion 8 CBOR** `Auctionator.lua` market data and optional `auxForever.lua` item names. Designed for the early EU Horde PvP economy with a starting bankroll of **43s 38c** with a default aggressive 5s reserve; these settings are editable.
 
