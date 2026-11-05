@@ -437,6 +437,58 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertTrue(self.sim.run_until(lambda: self.sim.phase_is('READY'), timeout=timeout), f'never ready: phase {self.sim.phase}')
         self.sim.run(0.3)  # past the anti-misclick delay
 
+    def test_sniper_purchase_journals_once_with_latency_and_no_autobuy(self):
+        self.sim.set_commodity(LINEN, [(10, 5)])
+        self.start()
+        self.wait_ready()
+        self.assertEqual(self.sim.bought(), [])
+        self.sim.press()
+        self.assertTrue(self.sim.run_until(lambda: self.sim.bought(), timeout=5))
+        self.assertTrue(self.sim.run_until(
+            lambda: self.sim.lua.eval('ForeverTraderBridgeDB.snipe_metrics') is not None,
+            timeout=3))
+        self.sim.run(2)
+        db=self.sim.lua.eval('ForeverTraderBridgeDB')
+        rows=list(db.snipe_metrics.values())
+        self.assertEqual(len(rows),1)
+        row=rows[0]
+        self.assertEqual(row.outcome,'BOUGHT')
+        self.assertEqual(row.item_id,LINEN)
+        self.assertEqual(row.reason,'vendor')
+        self.assertGreater(row.offer_finish_ms,0)
+        self.assertTrue(row.uid.endswith(':1'))
+        self.assertTrue(any('FTPM1|' in line for line in db.log.values()))
+        self.assertEqual(len(self.sim.bought()),1)
+
+    def test_incremental_buy_records_page_to_purchase(self):
+        self._set_paged_market()
+        self.start()
+        self.wait_ready(timeout=15)
+        self.assertFalse(self.sim.g['C_AuctionHouse'].HasFullBrowseResults())
+        self.sim.press()
+        self.assertTrue(self.sim.run_until(lambda: self.sim.bought(), timeout=5))
+        self.sim.run(1)
+        rows=list(self.sim.lua.eval('ForeverTraderBridgeDB.snipe_metrics').values())
+        self.assertEqual(len(rows),1)
+        self.assertTrue(rows[0].early)
+        self.assertEqual(rows[0].source,'early')
+        self.assertGreater(rows[0].page_ready_ms,0)
+        self.assertGreater(rows[0].page_finish_ms,rows[0].page_ready_ms)
+
+    def test_unavailable_listing_is_lost_without_buying_or_inventing_profit(self):
+        self.sim.set_commodity(LINEN, [(10, 5)])
+        self.start()
+        self.wait_ready()
+        self.sim.set_commodity(LINEN, [(50, 5)])
+        self.sim.press()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.sim.phase_is('LOST'), timeout=15))
+        self.sim.run(0.1)
+        rows=list(self.sim.lua.eval('ForeverTraderBridgeDB.snipe_metrics').values())
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0].outcome,'LOST')
+        self.assertEqual(self.sim.bought(), [])
+
     def test_browse_is_counted_even_when_quick_buy_interrupts_the_round(self):
         self.sim.set_commodity(LINEN, [(10, 5)])
         self.start()
