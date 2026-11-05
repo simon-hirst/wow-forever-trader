@@ -430,10 +430,11 @@ class App(tk.Tk):
             imported=self.store.ingest_books(payload)
             activity=self.store.ingest_activity(payload)
             self.last_bridge_sig=sig
-            if imported or activity['new_events'] or activity['wallets']:
+            if imported or activity['new_events'] or activity['wallets'] or activity['wallet_changes']:
                 self.status_var.set(f'Bridge: {imported} books, {activity["new_events"]} events '
-                    f'({activity["confirmed"]} confirmed), {activity["wallets"]} wallet updates; /reload to sync')
-            return imported+activity['new_events']+activity['wallets']
+                    f'({activity["confirmed"]} confirmed), {activity["wallets"]} wallet updates, '
+                    f'{activity["wallet_changes"]} wallet changes; /reload to sync')
+            return imported+activity['new_events']+activity['wallets']+activity['wallet_changes']
         except (OSError,ParseError,ValueError) as e:
             if not silent:self.status_var.set('Bridge import failed: '+str(e))
             return 0
@@ -572,7 +573,9 @@ class App(tk.Tk):
         wallet=self.store.latest_wallet()
         extra=(f' · Last wallet: {fmt_copper(wallet[1])} ({wallet[0]}; '
                f'{time.strftime("%H:%M UTC",time.gmtime(wallet[2]))})') if wallet else ''
-        self.activity_var.set(f'{len(rows)} recent events · {self.store.review_count()} need review'+extra)
+        recent=self.store.recent_wallet_changes(limit=1)
+        movement=(f' · Latest wallet change {recent[0][4]:+d}c ({recent[0][5]})' if recent else '')
+        self.activity_var.set(f'{len(rows)} recent events · {self.store.review_count()} need review'+extra+movement)
 
     def _update_ledger(self):
         self.trade_tree.delete(*self.trade_tree.get_children())

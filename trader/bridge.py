@@ -135,5 +135,21 @@ def parse_bridge(path: Path) -> dict:
             if character and 0<=copper<=10**12 and 0<ts<4102444800:
                 wallets.append(dict(character=character,copper=copper,ts=ts))
         except (TypeError,ValueError,OverflowError):continue
+    changes=[]
+    for _,raw in sorted((table.get('wallet_changes') or {}).items(),
+                        key=lambda pair: int(pair[0]) if str(pair[0]).isdigit() else 999999):
+        if not isinstance(raw,dict):continue
+        try:
+            uid=str(raw.get('uid',''))
+            character=str(raw.get('character',''))[:120]
+            ts=int(raw.get('ts',0));copper=int(raw.get('copper',-1))
+            delta=int(raw.get('delta',0));context=str(raw.get('context','WORLD'))[:32]
+            if not uid.isdigit() or int(uid)<=0 or not character:continue
+            if not 0<ts<4102444800 or not 0<=copper<=10**12:continue
+            if not -(10**12)<=delta<=10**12:continue
+            if context not in ('AH','MERCHANT','WORLD'):context='WORLD'
+            changes.append(dict(uid=uid,character=character,ts=ts,
+                                copper=copper,delta=delta,context=context))
+        except (TypeError,ValueError,OverflowError):continue
     return {'books':books,'count':len(books),'market':str(table.get('market') or 'PvP'),
-            'activity':activity,'wallets':wallets}
+            'activity':activity,'wallets':wallets,'wallet_changes':changes}

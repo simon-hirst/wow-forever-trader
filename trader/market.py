@@ -45,6 +45,9 @@ class MarketStore:
             CREATE TABLE IF NOT EXISTS wallets (
                 character TEXT PRIMARY KEY,copper INTEGER NOT NULL,
                 seen_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS wallet_changes (
+                uid TEXT PRIMARY KEY,character TEXT NOT NULL,ts INTEGER NOT NULL,
+                copper INTEGER NOT NULL,delta INTEGER NOT NULL,context TEXT NOT NULL);
         """)
         if 'event_uid' not in columns:
             self.db.execute('ALTER TABLE trades ADD COLUMN event_uid TEXT')
@@ -241,7 +244,7 @@ class MarketStore:
 
     def ingest_activity(self, payload):
         """Deduplicate receipts; only confirmed events contribute to profit."""
-        new_events=0;confirmed=0;wallets_updated=0
+        new_events=0;confirmed=0;wallets_updated=0;wallet_changes=0
         with self.db:
             for row in payload.get('activity',[]):
                 uid=row['uid']
@@ -256,6 +259,12 @@ class MarketStore:
                 if row['status']=='confirmed' and row['kind'] in ('AH_BUY','VENDOR_SELL'):
                     self._apply_confirmed_auto(row)
                     confirmed+=1
+            for change in payload.get('wallet_changes',[]):
+                cursor=self.db.execute('''INSERT OR IGNORE INTO wallet_changes
+                    (uid,character,ts,copper,delta,context) VALUES(?,?,?,?,?,?)''',
+                    (change['uid'],change['character'],change['ts'],
+                     change['copper'],change['delta'],change['context']))
+                wallet_changes+=cursor.rowcount
             for wallet in payload.get('wallets',[]):
                 prior=self.db.execute('SELECT seen_at,copper FROM wallets WHERE character=?',
                                       (wallet['character'],)).fetchone()
@@ -265,7 +274,7 @@ class MarketStore:
                         copper=excluded.copper,seen_at=excluded.seen_at''',
                         (wallet['character'],wallet['copper'],wallet['ts']))
                     wallets_updated+=1
-        return dict(new_events=new_events,confirmed=confirmed,wallets=wallets_updated)
+        return dict(new_events=new_events,confirmed=confirmed,wallets=wallets_updated,wallet_changes=wallet_changes)
 
     def _apply_confirmed_auto(self,row):
         kind=row['kind'];side='BUY' if kind=='AH_BUY' else 'SELL'
@@ -309,6 +318,10 @@ class MarketStore:
 
     def latest_wallet(self):
         return self.db.execute('SELECT character,copper,seen_at FROM wallets ORDER BY seen_at DESC LIMIT 1').fetchone()
+
+    def recent_wallet_changes(self,limit=250):
+        return self.db.execute('''SELECT uid,character,ts,copper,delta,context
+            FROM wallet_changes ORDER BY CAST(uid AS INTEGER) DESC LIMIT ?''',(limit,)).fetchall()
 
     def transactions(self):
         return self.db.execute("SELECT t.id,t.time,t.side,t.item_id,COALESCE(n.name,'Item #'||t.item_id), t.qty,t.unit,t.fee,t.note,t.channel FROM trades t LEFT JOIN names n ON n.item_id=t.item_id ORDER BY t.id DESC").fetchall()
@@ -358,6 +371,7 @@ class MarketStore:
             'latest_saved_wallet':dict(zip(['character','copper','seen_at'],wallet)) if wallet else None,
             'automatic_events_count':self.db.execute('SELECT COUNT(*) FROM automatic_events').fetchone()[0],
             'automatic_events_unverified':self.review_count(),
+            'wallet_change_events_count':self.db.execute('SELECT COUNT(*) FROM wallet_changes').fetchone()[0],
             'market_item_count':len(rows),'orderbooks_recorded':len(self.order_book_rows()),'market_movers_over_20pct':sum(1 for r in rows if r['change'] is not None and abs(r['change'])>=20),'ledger':self.ledger(),
             'watchlist': [{'item_id':item,'target_copper':target,'notes':notes} for item,(target,notes) in self.watchlist().items()],
             'caveats':['Prices are auction-house minimum observed buyout, not confirmed filled trades.',
@@ -393,7 +407,13 @@ class MarketStore:
         wallets_csv=io.StringIO();ww=csv.writer(wallets_csv)
         ww.writerow(['character','wallet_copper','last_saved_at_utc'])
         ww.writerows(self.db.execute('SELECT character,copper,seen_at FROM wallets ORDER BY seen_at DESC'))
+        changes_csv=io.StringIO();cw=csv.writer(changes_csv)
+        cw.writerow(['event_uid','character','timestamp_utc','balance_copper','change_copper','context'])
+        for row in self.db.execute('''SELECT uid,character,ts,copper,delta,context FROM wallet_changes
+                                      ORDER BY CAST(uid AS INTEGER)'''):
+            cw.writerow(row)
         with zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as z:
+            z.writestr('wallet_changes.csv',changes_csv.getvalue())
             z.writestr('automatic_activity.csv',automatic.getvalue())
             z.writestr('wallet_checkpoints.csv',wallets_csv.getvalue())
             z.writestr('order_books.csv',orderbooks.getvalue())

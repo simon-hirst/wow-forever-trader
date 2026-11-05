@@ -126,165 +126,225 @@ SlashCmdList['FOREVERTRADERBRIDGE']=function()
     print('Forever Trader Bridge: '..n..' recent item order books recorded. Type /reload to save them for the Windows app.')
 end
 
--- v0.3 transaction journal. Observe official purchase events and the player's
--- own inventory/money changes. Never place orders or invoke merchant actions.
--- Only unambiguous, money-matched receipts are marked confirmed; everything
--- else is REVIEW and deliberately excluded from automatic realised P&L.
+-- v0.3.2: transaction evidence. All collection is passive; no automatic trade actions.
+-- Keep uncertain receipts for manual review. Only reconcile sales after both the
+-- merchant wallet change and corresponding inventory change can be observed.
 local txnFrame = CreateFrame('Frame')
-local MAX_EVENTS = 1600
-local mode, previousMoney, previousBags, merchantMoney, merchantBags
+local MAX_EVENTS, MAX_WALLET_CHANGES = 1600, 700
+local mode, previousMoney, merchantMoney, merchantBags, merchantUnitPrices
 local pendingAH, moneyDebits = {}, {}
-local flushQueued, flushToken = false, 0
+local flushToken, merchantToken = 0, 0
 local auctionCache = {}
+local commodityIntent
 local characterID = 'Unknown'
 
-local function bagsSnapshot()
-    local contents = {}
+local function bagSnapshot()
+    local contents, prices = {}, {}
     for bag=0,4 do
-        local slots
+        local slots = 0
         if C_Container and C_Container.GetContainerNumSlots then
-            slots=C_Container.GetContainerNumSlots(bag)
+            slots = C_Container.GetContainerNumSlots(bag) or 0
         elseif GetContainerNumSlots then
-            slots=GetContainerNumSlots(bag)
+            slots = GetContainerNumSlots(bag) or 0
         end
-        for slot=1,(slots or 0) do
-            local id,qty
-            if C_Container and C_Container.GetContainerItemID then
-                id=C_Container.GetContainerItemID(bag,slot)
-                local info=C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag,slot)
-                qty=info and (info.stackCount or info.quantity)
-            elseif GetContainerItemID then
-                id=GetContainerItemID(bag,slot)
-                if GetContainerItemInfo then
-                    local _, count=GetContainerItemInfo(bag,slot)
-                    qty=count
+        for slot=1,slots do
+            local itemID, qty, link
+            if C_Container and C_Container.GetContainerItemInfo then
+                local info = C_Container.GetContainerItemInfo(bag,slot)
+                if info then
+                    itemID = info.itemID
+                    qty = info.stackCount or info.quantity
+                    link = info.hyperlink
                 end
             end
-            if type(id)=='number' and id>0 then contents[id]=(contents[id] or 0)+(qty or 1) end
+            if not itemID and C_Container and C_Container.GetContainerItemID then
+                itemID = C_Container.GetContainerItemID(bag,slot)
+            end
+            if not itemID and GetContainerItemID then itemID = GetContainerItemID(bag,slot) end
+            if not qty and GetContainerItemInfo then
+                local _,count = GetContainerItemInfo(bag,slot)
+                qty = count
+            end
+            if not link then
+                if C_Container and C_Container.GetContainerItemLink then
+                    link = C_Container.GetContainerItemLink(bag,slot)
+                elseif GetContainerItemLink then
+                    link = GetContainerItemLink(bag,slot)
+                end
+            end
+            if type(itemID)=='number' and itemID>0 then
+                local quantity = (type(qty)=='number' and qty>0) and qty or 1
+                contents[itemID] = (contents[itemID] or 0) + quantity
+                -- Cache the actual item-link vendor payout while the item is still in a bag.
+                -- Once sold, GetItemInfo(itemID) can return nil when item data is uncached.
+                local unit = 0
+                if link and GetItemInfo then
+                    local ok, price = pcall(function() return select(11,GetItemInfo(link)) end)
+                    if ok and type(price)=='number' then unit=price end
+                end
+                if unit<=0 then unit=vendor_price(itemID) end
+                if prices[itemID] and prices[itemID]~=unit then
+                    prices[itemID]=-1 -- inconsistent variants: never auto-confirm
+                elseif not prices[itemID] then
+                    prices[itemID]=unit
+                end
+            end
         end
     end
-    return contents
+    return contents, prices
 end
+
 local function ensureTxnDB()
     if type(ForeverTraderBridgeDB)~='table' then return nil end
     local db=ForeverTraderBridgeDB
     if type(db.activity)~='table' then db.activity={} end
     if type(db.wallets)~='table' then db.wallets={} end
+    if type(db.wallet_changes)~='table' then db.wallet_changes={} end
     db.activity_seq=db.activity_seq or 0
+    db.wallet_seq=db.wallet_seq or 0
     return db
 end
+
 local function recordWallet()
     local db=ensureTxnDB()
-    if db and GetMoney then
-        db.wallets[characterID]={character=characterID,copper=GetMoney(),ts=time()}
+    if not db or not GetMoney then return end
+    local money=GetMoney()
+    local previous=db.wallets[characterID]
+    if not previous or previous.copper~=money then
+        db.wallet_seq=db.wallet_seq+1
+        db.wallet_changes[#db.wallet_changes+1]={
+            uid=tostring(db.wallet_seq),character=characterID,copper=money,
+            delta=previous and money-previous.copper or 0,
+            context=mode or 'WORLD',ts=time()}
+        if #db.wallet_changes>MAX_WALLET_CHANGES then table.remove(db.wallet_changes,1) end
     end
+    db.wallets[characterID]={character=characterID,copper=money,ts=time()}
 end
+
 local function eventRecord(kind,id,qty,total,status,note)
     local db=ensureTxnDB()
     if not db then return end
     db.activity_seq=db.activity_seq+1
-    local seq=db.activity_seq
-    local row={uid=tostring(seq),ts=time(),character=characterID,kind=kind,
-        item_id=id or 0,qty=qty or 0,total=total or 0,
-        status=status or 'review',note=note or ''}
-    table.insert(db.activity,row)
+    db.activity[#db.activity+1]={uid=tostring(db.activity_seq),ts=time(),
+        character=characterID,kind=kind,item_id=id or 0,qty=qty or 0,
+        total=total or 0,status=status or 'review',note=note or ''}
     if #db.activity>MAX_EVENTS then table.remove(db.activity,1) end
 end
+
+local function settleMerchant(final)
+    if merchantMoney==nil then return end
+    local money=GetMoney()
+    local bags,prices=bagSnapshot()
+    local sold, expected, unknown = {}, 0, false
+    for itemID, originalQty in pairs(merchantBags or {}) do
+        local qty=originalQty-(bags[itemID] or 0)
+        if qty>0 then
+            local unit=(merchantUnitPrices or {})[itemID] or vendor_price(itemID)
+            if unit<=0 then unknown=true end
+            sold[#sold+1]={id=itemID,qty=qty,unit=unit}
+            if unit>0 then expected=expected+qty*unit end
+        end
+    end
+    table.sort(sold,function(a,b)return a.id<b.id end)
+    local gained=money-merchantMoney
+    if gained>0 and #sold>0 and not unknown and expected==gained then
+        for _,item in ipairs(sold) do
+            eventRecord('VENDOR_SELL',item.id,item.qty,item.qty*item.unit,'confirmed',
+                'Merchant wallet and bag decreases exactly matched NPC payout')
+        end
+        merchantMoney,merchantBags,merchantUnitPrices=money,bags,prices
+    elseif final then
+        if gained~=0 or #sold>0 then
+            local hints={}
+            for i,item in ipairs(sold) do
+                if i>6 then hints[#hints+1]='...';break end
+                hints[#hints+1]=tostring(item.id)..'x'..tostring(item.qty)..'@'..tostring(item.unit)
+            end
+            local note='Merchant net '..tostring(gained)..'c; expected '..tostring(expected)..
+                'c; bag decreases ['..table.concat(hints,',')..']. Mixed sales/buys, unknown prices, or missing bag updates; verify.'
+            if #sold==1 and gained>0 then
+                -- Enough item evidence for a useful review, but not a reliable payout match.
+                eventRecord('VENDOR_SELL',sold[1].id,sold[1].qty,gained,'review',note)
+            else
+                eventRecord('VENDOR_MONEY',0,0,math.max(0,gained),'review',note)
+            end
+        end
+        merchantMoney,merchantBags,merchantUnitPrices=money,bags,prices
+    end
+    -- Crucially, do NOT advance the merchant baseline if the cash has arrived
+    -- but the delayed bag update has not. This caused missed vendor receipts.
+end
+
 local function clearOldDebits()
     local now=GetTime()
     for i=#moneyDebits,1,-1 do
-        if now-moneyDebits[i].ts>4 then table.remove(moneyDebits,i) end
+        if now-moneyDebits[i].ts>8 then table.remove(moneyDebits,i) end
     end
 end
-local function settleMerchant()
-    local money=GetMoney()
-    local bags=bagsSnapshot()
-    if merchantMoney and money>merchantMoney then
-        local sold, expected, unknown = {}, 0, false
-        for id,was in pairs(merchantBags or {}) do
-            local q=was-(bags[id] or 0)
-            if q>0 then
-                local unit=vendor_price(id)
-                if unit<=0 then unknown=true end
-                sold[#sold+1]={id=id,q=q,unit=unit}
-                expected=expected+q*unit
-            end
-        end
-        local gained=money-merchantMoney
-        if #sold>0 and not unknown and gained==expected then
-            for _,v in ipairs(sold) do
-                eventRecord('VENDOR_SELL',v.id,v.q,v.q*v.unit,'confirmed',
-                    'Vendor payout matched bag decrease and wallet increase')
-            end
-        else
-            eventRecord('VENDOR_MONEY',0,0,gained,'review',
-                'Vendor wallet gain could not be reliably attributed to individual bag items')
-        end
-    end
-    merchantMoney,merchantBags=money,bags
-end
+
 local function settleAH()
     if #pendingAH==0 then return end
     clearOldDebits()
-    -- The client's two item-purchase notifications can refer to the same buy.
-    -- Prefer the auctionID receipt whenever both are observed together.
+    -- Different event names can report the same completed purchase. De-duplicate
+    -- commodity success notifications and prefer auction-ID completion receipts.
     local completed={}
     for _,p in ipairs(pendingAH) do
         if p.event=='AUCTION_HOUSE_PURCHASE_COMPLETED' and p.id then completed[p.id]=true end
     end
-    local relevant={}
+    local relevant, commodityKeys={},{}
     for _,p in ipairs(pendingAH) do
-        if p.event~='ITEM_PURCHASED' or not completed[p.id] then
-            relevant[#relevant+1]=p
+        if not (p.event=='ITEM_PURCHASED' and completed[p.id]) then
+            local isCommodity=p.event=='COMMODITY_PURCHASED' or p.event=='COMMODITY_PURCHASE_SUCCEEDED'
+            local key=isCommodity and (tostring(p.id)..':'..tostring(p.qty)) or nil
+            if not key or not commodityKeys[key] then
+                relevant[#relevant+1]=p
+                if key then commodityKeys[key]=true end
+            end
         end
     end
-    if #relevant==1 and #moneyDebits==1 then
+    if #relevant==1 and #moneyDebits>=1 then
         local p=relevant[1]
-        local debit=moneyDebits[1].amount
-        local valid=(p.qty or 0)>0 and p.id and p.id>0 and debit>0
-        -- Item auctions have a cached exact buyout. Require it to match wallet.
+        local debit=0
+        for _,entry in ipairs(moneyDebits) do debit=debit+entry.amount end
+        local valid=p.id and p.id>0 and (p.qty or 0)>0 and debit>0
         if p.expected and p.expected~=debit then valid=false end
         if valid then
             eventRecord('AH_BUY',p.id,p.qty,debit,'confirmed',
-                'Purchase event matched a single wallet debit')
+                'One purchase matched AH debit; item and quantity identified')
         else
             eventRecord('AH_BUY',p.id,p.qty,debit,'review',
-                'Amount or quantity ambiguous; check auction receipts')
+                'Purchase cost/identity uncertain; verify auction mail or receipt')
         end
         moneyDebits={}
     else
         for _,p in ipairs(relevant) do
             eventRecord('AH_BUY',p.id,p.qty,p.expected or 0,'review',
-                'No unique matching wallet debit; review manually')
+                'Could not uniquely match purchase events and wallet debits')
         end
     end
     pendingAH={}
 end
+
 local function flush()
-    flushQueued=false
-    if mode=='MERCHANT' then settleMerchant()
+    if mode=='MERCHANT' then settleMerchant(false)
     elseif mode=='AH' then settleAH() end
     previousMoney=GetMoney()
-    previousBags=bagsSnapshot()
     recordWallet()
 end
 local function scheduleFlush()
     flushToken=flushToken+1
     local token=flushToken
     if C_Timer and C_Timer.After then
-        C_Timer.After(.65,function()
-            if token==flushToken then flush() end
-        end)
+        C_Timer.After(.85,function() if token==flushToken then flush() end end)
     else
         flush()
     end
 end
 local function pushPurchase(id,qty,event,expected)
-    pendingAH[#pendingAH+1]={id=id,qty=qty,event=event,expected=expected}
+    pendingAH[#pendingAH+1]={id=id or 0,qty=qty or 0,event=event,expected=expected}
     scheduleFlush()
 end
--- We cache only auction IDs and prices encountered during the player's own
--- detailed item searches. This cache is not exported to disk.
+
 local function cacheItemAuctions(itemKey)
     if not itemKey or not AH or not AH.GetNumItemSearchResults then return end
     local ok,count=pcall(AH.GetNumItemSearchResults,itemKey)
@@ -297,11 +357,33 @@ local function cacheItemAuctions(itemKey)
         end
     end
 end
+
+-- Capture the item's identity from the player's own commodity-buy confirmation.
+-- This never sends a query, confirms a purchase, or changes protected UI actions.
+if AH and hooksecurefunc and type(AH.ConfirmCommoditiesPurchase)=='function' then
+    pcall(hooksecurefunc,AH,'ConfirmCommoditiesPurchase',function(itemID,qty)
+        if type(itemID)=='number' and type(qty)=='number' and qty>0 then
+            commodityIntent={id=itemID,qty=qty,ts=GetTime()}
+        end
+    end)
+end
+local function commodityPurchase(event,itemID,qty)
+    local intent=commodityIntent
+    if intent and GetTime()-intent.ts<=12 and
+        (not itemID or itemID==intent.id) then
+        pushPurchase(intent.id,intent.qty,event)
+        commodityIntent=nil
+    else
+        pushPurchase(type(itemID)=='number' and itemID or 0,
+                     type(qty)=='number' and qty or 0,event)
+    end
+end
+
 for _,ev in ipairs({
     'PLAYER_LOGIN','PLAYER_ENTERING_WORLD','PLAYER_MONEY','BAG_UPDATE_DELAYED',
     'AUCTION_HOUSE_SHOW','AUCTION_HOUSE_CLOSED','MERCHANT_SHOW','MERCHANT_CLOSED',
-    'COMMODITY_PURCHASED','ITEM_PURCHASED','AUCTION_HOUSE_PURCHASE_COMPLETED',
-    'ITEM_SEARCH_RESULTS_UPDATED','ITEM_SEARCH_RESULTS_ADDED'
+    'COMMODITY_PURCHASED','COMMODITY_PURCHASE_SUCCEEDED','ITEM_PURCHASED',
+    'AUCTION_HOUSE_PURCHASE_COMPLETED','ITEM_SEARCH_RESULTS_UPDATED','ITEM_SEARCH_RESULTS_ADDED'
 }) do txnFrame:RegisterEvent(ev) end
 
 txnFrame:SetScript('OnEvent',function(_,event,...)
@@ -309,39 +391,53 @@ txnFrame:SetScript('OnEvent',function(_,event,...)
         local name=UnitName('player') or 'Unknown'
         local server=GetRealmName and GetRealmName() or 'PvP'
         characterID=name..'-'..server
-        previousMoney=GetMoney();previousBags=bagsSnapshot();recordWallet()
+        previousMoney=GetMoney()
+        recordWallet()
     elseif event=='AUCTION_HOUSE_SHOW' then
-        if mode=='MERCHANT' then settleMerchant() end
-        mode='AH';pendingAH={};moneyDebits={}
-        previousMoney=GetMoney();previousBags=bagsSnapshot();recordWallet()
-    elseif event=='AUCTION_HOUSE_CLOSED' then
-        -- Preserve a pending purchase for settlement even if the window closes.
-        scheduleFlush()
-        if C_Timer and C_Timer.After then C_Timer.After(1,function() if mode=='AH' then mode=nil end end) end
-    elseif event=='MERCHANT_SHOW' then
-        mode='MERCHANT';merchantMoney=GetMoney();merchantBags=bagsSnapshot()
-        previousMoney=merchantMoney;previousBags=merchantBags;recordWallet()
-    elseif event=='MERCHANT_CLOSED' then
-        flushToken=flushToken+1;settleMerchant();mode=nil
+        if merchantMoney~=nil then settleMerchant(true) end
+        merchantMoney=nil;mode='AH';pendingAH={};moneyDebits={}
         previousMoney=GetMoney();recordWallet()
+    elseif event=='AUCTION_HOUSE_CLOSED' then
+        scheduleFlush()
+        if C_Timer and C_Timer.After then
+            C_Timer.After(2,function() if mode=='AH' then settleAH();mode=nil;recordWallet() end end)
+        end
+    elseif event=='MERCHANT_SHOW' then
+        if merchantMoney~=nil then settleMerchant(true) end
+        merchantToken=merchantToken+1
+        mode='MERCHANT';merchantMoney=GetMoney()
+        merchantBags,merchantUnitPrices=bagSnapshot()
+        previousMoney=merchantMoney;recordWallet()
+    elseif event=='MERCHANT_CLOSED' then
+        merchantToken=merchantToken+1
+        local token=merchantToken
+        flushToken=flushToken+1
+        mode=nil
+        if C_Timer and C_Timer.After then
+            C_Timer.After(.35,function()
+                if token==merchantToken then
+                    settleMerchant(true);merchantMoney=nil;recordWallet()
+                end
+            end)
+        else
+            settleMerchant(true);merchantMoney=nil;recordWallet()
+        end
+        previousMoney=GetMoney()
     elseif event=='PLAYER_MONEY' then
         local nowMoney=GetMoney()
         if mode=='AH' and previousMoney and nowMoney<previousMoney then
             moneyDebits[#moneyDebits+1]={amount=previousMoney-nowMoney,ts=GetTime()}
         end
-        previousMoney=nowMoney
-        recordWallet()
+        previousMoney=nowMoney;recordWallet()
         if mode=='AH' or mode=='MERCHANT' then scheduleFlush() end
     elseif event=='BAG_UPDATE_DELAYED' then
         if mode=='MERCHANT' then scheduleFlush() end
-    elseif event=='COMMODITY_PURCHASED' then
-        local id,qty=...
-        if type(id)=='number' and type(qty)=='number' then
-            pushPurchase(id,qty,event)
-        end
+    elseif event=='COMMODITY_PURCHASED' or event=='COMMODITY_PURCHASE_SUCCEEDED' then
+        local itemID,qty=...
+        commodityPurchase(event,itemID,qty)
     elseif event=='ITEM_PURCHASED' then
-        local id=...
-        if type(id)=='number' then pushPurchase(id,0,event) end -- qty unknown without auctionID
+        local itemID=...
+        if type(itemID)=='number' then pushPurchase(itemID,0,event) end
     elseif event=='AUCTION_HOUSE_PURCHASE_COMPLETED' then
         local auctionID=...
         local info=auctionCache[auctionID]
@@ -352,13 +448,16 @@ txnFrame:SetScript('OnEvent',function(_,event,...)
             pushPurchase(0,0,event)
         end
     elseif event=='ITEM_SEARCH_RESULTS_UPDATED' or event=='ITEM_SEARCH_RESULTS_ADDED' then
-        local itemKey=...
-        pcall(cacheItemAuctions,itemKey)
+        pcall(cacheItemAuctions,...)
     end
 end)
+
 SLASH_FOREVERTRADERACTIVITY1='/ftmoney'
 SlashCmdList.FOREVERTRADERACTIVITY=function()
     local db=ensureTxnDB()
     print('Forever Trader: wallet '..(GetCoinTextureString and GetCoinTextureString(GetMoney()) or tostring(GetMoney())..' copper'))
-    if db then print('Forever Trader: '..#db.activity..' captured transaction events ('..tostring(db.activity_seq)..' total). Type /reload to sync the Windows app.') end
+    if db then
+        print('Forever Trader: '..#db.activity..' receipts, '..#db.wallet_changes..
+            ' wallet checkpoints. Type /reload to sync the Windows app.')
+    end
 end

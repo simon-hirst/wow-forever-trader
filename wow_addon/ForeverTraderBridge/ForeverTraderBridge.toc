@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: Forever Trader Bridge
 ## Notes: Passive Auction House depth recorder for Forever Trader; no automatic queries or trades
-## Version: 0.3.0
+## Version: 0.3.2
 ## SavedVariables: ForeverTraderBridgeDB
 ForeverTraderBridge.lua

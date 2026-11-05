@@ -1,4 +1,12 @@
-# Forever Trader v0.3.1 — WoW Forever 1.60.1 desktop market terminal
+# Forever Trader v0.3.2 — WoW Forever 1.60.1 desktop market terminal
+
+## v0.3.2 — next-session trading improvements
+
+- Merchant sale tracking waits for both bag changes and wallet changes before confirming a vendor payout. It caches item-link NPC prices while items are still in your bags. Mixed purchases/sales are **REVIEW**, not fictitious profit.
+- AH commodity purchase detection listens to successful-purchase messages and captures your clicked quantity from the existing game API (without making purchases). Extra evidence may turn previous missing IDs into confirmed receipts.
+- New `wallet_changes.csv` export tracks each observed wallet delta, character, time and context (AH, MERCHANT or WORLD). It helps distinguish an actual loss from a stale saved balance; `/reload` is still required.
+- Optional `INSTALL_QUICK_SNIPE_WINDOWS.ps1` adds a **manual-click, cursor-adjacent vendor-deal button** to an installed auxForever Sniper. It selects a deal, waits for auxForever's existing live price check, then uses the original Buy/Confirm button logic on your separate clicks. Nothing buys itself; not tested in your live client. Restart WoW after patching. To remove it, use `-Uninstall`.
+- No retroactive reconstruction of old trades. Use fresh deals after updating to validate receipts.
 
 ## v0.3.1 — Windows release build fix
 
