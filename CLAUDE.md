@@ -8,7 +8,7 @@ app runs from source on the player's PC out of this folder, or as a PyInstaller 
 ## Layout
 
 - `wow_addon/ForeverTraderBridge/`: the addon. `Snipe.lua` is the Confirm button, `Market.lua` records
-  the market, `Link.lua` draws the data strip, `Aux.lua` reaches into auxForever at runtime, `Plan.lua` loads buy limits.
+  the market, `Link.lua` draws the data strip, `SniperAdapter.lua` reaches into auxForever at runtime, `Plan.lua` loads buy limits.
 - `trader/link.py`: decodes the strip. Must match `Link.lua` and `NS.BuildState` in `Main.lua`.
 - `trader/marketdata.py`: bars, full listings, sale estimates. `trader/quant.py`: the engine. `trader/strategy.py`: plan files and reports.
 - `trader/autopilot.py`: background worker. `trader/overlay.py`: the Windows Confirm button. `trader/ui.py`: the Tk app.
@@ -40,3 +40,13 @@ The game can only be reached by asking the player to run things. `/ft diag` in g
 
 Working-tree files may have CRLF endings from the auto-updater while git holds LF. Check real changes
 with `git diff --ignore-space-at-eol`, and do not commit line-ending noise.
+
+## Sniper performance experiment
+
+The 1.60.1 Sniper uses a server-paginated browse of the whole auction house; do not
+remove `C_AuctionHouse.IsThrottledMessageSystemReady` or issue overlapping queries.
+`SniperAdapter.lua` overrides only the idle pause and prioritizes new below-vendor
+browse candidates before live verification. `/ft scanstats` reports first page,
+full browse and verification timings. Speed modes: fast 0.35s, normal 2.5s,
+safe 6s. The priority list must leave the original C_AuctionHouse rows unchanged
+because Market.OnBrowse needs the complete list. No price-free/unverified buys.
