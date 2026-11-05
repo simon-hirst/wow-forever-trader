@@ -17,6 +17,130 @@ local SPEED_PAUSE = {fast = 0.35, normal = 2.5, safe = 6}
 Aux.stats = {rounds = 0, browses = 0, started = 0, rows = 0, priorities = 0, pages = 0, firstPage = 0, browse = 0, verify = 0}
 local pagesThisRound, firstPageAt = 0, nil
 
+-- OPT-IN incremental browse interception. The browse cache is cumulative.
+-- Interleave at most 1 high-value vendor verification between browse-page
+-- requests, never at the same time as another auction request.
+-- The server throttle remains entirely owned by aux.core.scan.request().
+local EARLY_PER_PAGE = 1
+local EARLY_PER_ROUND = 4
+local EARLY_MIN_PROFIT = 25  -- copper, unless the user's threshold is higher
+local EARLY_RECHECK_SECONDS = 35
+local earlySeen = {}         -- this round: item key -> last browse minPrice
+local earlyRecent = {}       -- across rounds: item key -> price/quantity/time
+local earlyInProgress = false
+local earlySessionDisabled = false
+
+Aux.stats.earlyChecks = 0
+Aux.stats.earlyDeals = 0
+Aux.stats.earlyPages = 0
+Aux.stats.earlySpent = 0
+Aux.stats.earlyFirst = 0
+Aux.stats.earlyRoundChecks = 0
+
+function Aux.PagesOn()
+    return NS.Settings().pages ~= false and not earlySessionDisabled
+end
+
+function Aux.SetPages(on)
+    NS.Settings().pages = on == true
+    return Aux.PagesOn()
+end
+
+-- Numeric fields only; no gear auction is purchased on browse data alone.
+local function earlyPotential(row, now)
+    local key = row and row.itemKey
+    if not key or type(key.itemID) ~= 'number' then return end
+    local price, qty = row.minPrice or 0, row.totalQuantity or 0
+    if price <= 0 or qty <= 0 then return end
+    local budget = GetMoney() - (NS.Plan.reserve or NS.Settings().reserve or 0)
+    if budget <= 0 or price > budget then return end
+    local id = key.itemID
+    local keyStr = Aux.scan.item_key_string(key)
+    if earlySeen[keyStr] == price then return end
+    local prev = earlyRecent[keyStr]
+    if prev and prev.price == price and prev.qty == qty
+        and now - prev.at < EARLY_RECHECK_SECONDS then return end
+    local name, quality, vendor
+    local ok, a, _, c, _, _, _, _, _, _, v = pcall(NS.GetItemInfo, id)
+    if ok then name, quality, vendor = a, c, v end
+    if not name or not quality or quality <= 0 or not vendor or vendor <= price then return end
+    local profit = vendor - price
+    local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module.account_data.sniper_profit) or 0)
+    if profit < minProfit then return end
+    if Aux.module.account_data.sniper_ignored
+        and Aux.module.account_data.sniper_ignored[keyStr] then return end
+    -- Page minima can be bids; a live item search decides if buyout exists.
+    local score = profit * math.min(qty, 8)
+    return {row = row, keyStr = keyStr, score = score, profit = profit, price = price, qty = qty}
+end
+
+function Aux.PreviewBrowsePage()
+    if not Aux.PagesOn() or earlyInProgress or not Aux.env
+        or not Aux.env.active or Aux.env.checking
+        or Aux.stats.earlyRoundChecks >= EARLY_PER_ROUND then return end
+    if NS.Snipe and NS.Snipe.state and NS.Snipe.state.phase ~= 0 then return end
+    -- No gain from interleaving searches if the whole browse is already loaded.
+    if C_AuctionHouse.HasFullBrowseResults() then return end
+    local rows = C_AuctionHouse.GetBrowseResults()
+    if type(rows) ~= 'table' or #rows == 0 then return end
+    local now = GetTime()
+    local choices = {}
+    for _, row in ipairs(rows) do
+        local result = earlyPotential(row, now)
+        if result then choices[#choices + 1] = result end
+    end
+    if #choices == 0 then return end
+    table.sort(choices, function(a, b)
+        if a.score == b.score then return a.profit > b.profit end
+        return a.score > b.score
+    end)
+    Aux.stats.earlyPages = Aux.stats.earlyPages + 1
+    local before = #rows
+    local checks = math.min(EARLY_PER_PAGE, EARLY_PER_ROUND - Aux.stats.earlyRoundChecks, #choices)
+    earlyInProgress = true
+    for i = 1, checks do
+        local c = choices[i]
+        -- Mark before the yielding search. If it is interrupted by a user
+        -- purchase, the candidate cannot be reissued from this same page.
+        earlySeen[c.keyStr] = c.price
+        earlyRecent[c.keyStr] = {price = c.price, qty = c.qty, at = now}
+        Aux.stats.earlyRoundChecks = Aux.stats.earlyRoundChecks + 1
+        Aux.stats.earlyChecks = Aux.stats.earlyChecks + 1
+        if not Aux.stats.earlyFirst or Aux.stats.earlyFirst == 0 then
+            Aux.stats.earlyFirst = now - (Aux.stats.roundAt or now)
+        end
+        local dealCount = #Aux.env.deals
+        local t0 = GetTime()
+        -- MUST NOT call through pcall: scan.read_item yields on Lua 5.1.
+        Aux.env.check_item(c.row.itemKey, c.keyStr, c.price)
+        Aux.stats.earlySpent = Aux.stats.earlySpent + GetTime() - t0
+        if #Aux.env.deals > dealCount then
+            Aux.stats.earlyDeals = Aux.stats.earlyDeals + 1
+            NS.Log('early page bargain: ' .. tostring(c.keyStr) ..
+                ' +at least ' .. tostring(c.profit) .. 'c per unit')
+            break -- an actionable deal takes precedence over pagination
+        end
+    end
+    earlyInProgress = false
+    -- If the client replaced the browse cache while searching, bail out of
+    -- this round; never let a partial browse mark other auctions as gone.
+    local after = C_AuctionHouse.GetBrowseResults()
+    if type(after) ~= 'table' or #after < before then
+        earlySessionDisabled = true
+        NS.Log('incremental browse cache changed during verification; disabled pages for this session')
+        Aux.scan.abort()
+        Aux.module.coro_wait()
+    end
+end
+
+function Aux.PreviewStats()
+    local s = Aux.stats
+    return string.format('pages %s, early checks %d (this round %d), early bargains %d, early search %.1fs, first early %.1fs',
+        Aux.PagesOn() and 'on' or 'off', s.earlyChecks, s.earlyRoundChecks,
+        s.earlyDeals, s.earlySpent, s.earlyFirst)
+end
+
+
 function Aux.SetSpeed(speed)
     speed = string.lower(tostring(speed or ''))
     local pause = SPEED_PAUSE[speed]
@@ -49,10 +173,10 @@ function Aux.StatsLine()
         return string.format('browse not returned yet; %s, %.1fs elapsed, pages %d, speed %s',
             phase, elapsed, pagesThisRound, speed)
     end
-    return string.format('browses %d, completed rounds %d, last %d items, browse %.1fs (first page %.1fs, %d page events), verification %s, priority candidates %d, current %s %.1fs, speed %s',
+    return string.format('browses %d, rounds %d, %d items, browse %.1fs (page 1 %.1fs, events %d), verification %s, priority %d, early %d/%d, current %s %.1fs, speed %s',
         a.browses, finished, a.rows, a.browse, a.firstPage, a.pages,
         env and env.active and env.checking and 'active' or string.format('last %.1fs', a.verify),
-        a.priorities, phase, elapsed, speed)
+        a.priorities, a.earlyDeals, a.earlyChecks, phase, elapsed, speed)
 end
 
 -- auxForever groups listings by search_signature, which can represent multiple
@@ -155,10 +279,37 @@ local function installHooks(env)
         return originalSetDatabase(self, records)
     end
 
+    -- aux.core.scan is a single coroutine. Its request helper has completed
+    -- waiting for a page event before we execute the early verification.
+    -- Any nested read_item() searches share that same request/throttle system.
+    local scanEnvironment = getfenv(Aux.scan.start)
+    local originalRequest = rawget(scanEnvironment, 'request')
+    if type(originalRequest) == 'function' then
+        scanEnvironment.request = function(send, events, match, cached)
+            local answer = originalRequest(send, events, match, cached)
+            if answer and not earlyInProgress and type(events) == 'table' then
+                for _, event in ipairs(events) do
+                    if event == 'AUCTION_HOUSE_BROWSE_RESULTS_UPDATED' or
+                        event == 'AUCTION_HOUSE_BROWSE_RESULTS_ADDED' then
+                        Aux.PreviewBrowsePage()
+                        break
+                    end
+                end
+            end
+            return answer
+        end
+    else
+        NS.Log('incremental browse disabled: aux scan request helper not found')
+        earlySessionDisabled = true
+    end
+
     local startRound = env.start_round
     env.start_round = function(...)
         Aux.stats.roundAt = GetTime()
         Aux.stats.started = Aux.stats.started + 1
+        Aux.stats.earlyRoundChecks = 0
+        Aux.stats.earlyFirst = 0
+        wipe(earlySeen)
         pagesThisRound, firstPageAt = 0, nil
         return startRound(...)
     end
