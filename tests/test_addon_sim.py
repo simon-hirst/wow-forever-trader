@@ -490,6 +490,53 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(judge(100, None, 150, 0, 60, 1)[0], 'vendor')
         self.assertIsNone(judge(250, None, 300, 0, 60, 1))
 
+    def _set_paged_market(self):
+        """Three priced items, with a profitable gear bargain on page one."""
+        self.sim.g['__ah'].browsePageSize = 1
+        self.sim.g['__ah'].browseLatency = 2.0
+        self.sim.set_gear(HATCHET, [(501, 500)])  # vendor 900, +400c
+        self.sim.set_commodity(CLOAK, [(800, 2)])  # vendor 0
+        self.sim.set_commodity(BOLT, [(1000, 3)])  # vendor 40
+
+    def test_early_vendor_deal_before_full_browse_is_not_bought_unattended(self):
+        self._set_paged_market()
+        self.start()
+        self.wait_ready(timeout=15)
+        self.assertFalse(self.sim.g['C_AuctionHouse'].HasFullBrowseResults())
+        self.assertGreaterEqual(self.ns.Aux.stats.earlyChecks, 1)
+        self.assertEqual(self.ns.Aux.stats.earlyDeals, 1)
+        self.assertEqual(self.sim.bought(), [])
+        events = self.sim.ah_log()
+        self.assertIn('search:' + str(HATCHET), events)
+        self.assertLess(events.index('search:' + str(HATCHET)),
+                        events.index('browse_more') if 'browse_more' in events else len(events))
+        self.sim.press()
+        self.assertTrue(self.sim.run_until(lambda: self.sim.bought(), timeout=5))
+        self.assertEqual(len(self.sim.bought()), 1)
+        self.assertEqual(self.sim.bought()[0]['id'], HATCHET)
+        self.assertEqual(self.sim.violations(), [])
+
+    def test_disabling_incremental_pages_waits_for_entire_browse(self):
+        self._set_paged_market()
+        self.ns.Settings().pages = False
+        self.start()
+        self.wait_ready(timeout=25)
+        self.assertTrue(self.sim.g['C_AuctionHouse'].HasFullBrowseResults())
+        self.assertEqual(self.ns.Aux.stats.earlyChecks, 0)
+        self.assertEqual(self.sim.bought(), [])
+
+    def test_normal_pagination_finishes_when_no_early_bargains(self):
+        self.sim.g['__ah'].browsePageSize = 1
+        self.sim.g['__ah'].browseLatency = 0.5
+        self.sim.set_commodity(CLOAK, [(800, 2)])
+        self.sim.set_commodity(BOLT, [(1000, 3)])
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Market.rounds > 0, timeout=15))
+        self.assertEqual(self.ns.Aux.stats.earlyChecks, 0)
+        self.assertGreaterEqual(self.sim.ah_log().count('browse_more'), 1)
+        self.assertEqual(self.sim.bought(), [])
+
     def test_opening_the_auction_house_starts_everything(self):
         self.start()
         self.sim.run(1)
