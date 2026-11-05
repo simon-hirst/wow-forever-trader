@@ -46,6 +46,73 @@ local function coin(c)
 end
 Snipe.Coin = coin
 
+-- An attempt is finished once, and stored in SavedVariables as well as the
+-- live optical log. Buying never happens from telemetry; only user presses
+-- reach the auction-house buy bar.
+local MAX_SNIPE_METRICS = 2500
+
+local function milliseconds(a, b)
+    if not a or not b or b < a then return 0 end
+    return math.floor((b - a) * 1000 + 0.5)
+end
+
+local function completeAttempt(outcome)
+    local a = S.perf
+    if not a or a.finished then return end
+    a.finished = true
+    local now = GetTime()
+    local row = {
+        uid = a.uid, ts = NS.Now(), character = a.character,
+        item_id = a.item_id, outcome = outcome,
+        qty = math.max(0, math.floor(S.n or 0)),
+        cost = math.max(0, math.floor(S.cost or 0)),
+        estimated_profit = math.max(0, math.floor(S.profit or 0)),
+        early = a.early,
+        page_ready_ms = milliseconds(a.pageAt, a.readyAt),
+        page_finish_ms = milliseconds(a.pageAt, now),
+        offer_ready_ms = milliseconds(a.offerAt, a.readyAt),
+        offer_finish_ms = milliseconds(a.offerAt, now),
+        reason = a.reason,
+        source = a.early and 'early' or 'full',
+    }
+    local db = ForeverTraderBridgeDB
+    if type(db) == 'table' then
+        db.snipe_metrics = type(db.snipe_metrics) == 'table' and db.snipe_metrics or {}
+        db.snipe_metrics[#db.snipe_metrics + 1] = row
+        while #db.snipe_metrics > MAX_SNIPE_METRICS do
+            table.remove(db.snipe_metrics, 1)
+        end
+    end
+    local fields = {row.uid, row.ts, row.character, row.item_id,
+        row.outcome, row.qty, row.cost, row.estimated_profit,
+        row.early and 1 or 0, row.page_ready_ms, row.page_finish_ms,
+        row.offer_ready_ms, row.offer_finish_ms, row.reason, row.source}
+    for i, value in ipairs(fields) do fields[i] = tostring(value) end
+    NS.Log('FTPM1|' .. table.concat(fields, '|'))
+end
+
+local function startAttempt(deal)
+    local db = ForeverTraderBridgeDB
+    local seq
+    if type(db) == 'table' then
+        db.snipe_seq = (tonumber(db.snipe_seq) or 0) + 1
+        seq = db.snipe_seq
+    else
+        S.fallbackSeq = (S.fallbackSeq or 0) + 1
+        seq = S.fallbackSeq
+    end
+    local character = tostring(UnitName('player') or 'Unknown') .. '-' ..
+        tostring((GetRealmName and GetRealmName()) or 'PvP')
+    character = string.gsub(character, '[|\\n\\r]', '_')
+    S.perf = {uid = character .. ':' .. tostring(seq), character = character,
+        item_id = deal.item_id or 0, offerAt = GetTime(),
+        pageAt = deal.ft_first_page_at, early = deal.ft_incremental == true,
+        reason = deal.deal_reason == 'vendor' and 'vendor' or
+            deal.deal_reason == 'usual' and 'usual' or
+            deal.deal_reason == 'plan' and 'plan' or 'unknown',
+        deal = deal}
+end
+
 local PHASE_NAMES = {}
 for name, value in pairs(PHASE) do PHASE_NAMES[value] = name end
 
@@ -53,6 +120,13 @@ local function setPhase(phase)
     if S.phase ~= phase then
         S.phase = phase
         S.phaseAt = GetTime()
+        if phase == PHASE.READY and S.perf and not S.perf.readyAt then
+            S.perf.readyAt = S.phaseAt
+        elseif phase == PHASE.DONE then
+            completeAttempt('BOUGHT')
+        elseif phase == PHASE.LOST then
+            completeAttempt('LOST')
+        end
         NS.Link.MarkState()
         if phase ~= PHASE.IDLE then
             NS.Log(string.format('confirm %s: %s x%d %s', PHASE_NAMES[phase], S.deal and S.deal.name or '?', S.n or 0, S.message and phase >= PHASE.DONE and S.message or ''))
@@ -216,6 +290,7 @@ local function begin(deal, isRetry)
     S.selectTries = 0
     S.failedEvent, S.boughtEvent = nil, nil
     if not isRetry then
+        startAttempt(deal)
         S.retries = 0
         S.armedAt = GetTime() + ARM_DELAY
     end
@@ -229,6 +304,8 @@ local function finish(phase, message)
 end
 
 local function finishIdle()
+    if S.perf and not S.perf.finished then completeAttempt('CANCELLED') end
+    S.perf = nil
     S.deal, S.n, S.cost, S.profit, S.quote = nil, nil, nil, nil, nil
     setPhase(PHASE.IDLE)
 end
@@ -476,6 +553,7 @@ function Snipe.Tick()
         if deal.deal_gone then
             finish(PHASE.LOST, 'Sold before you could buy it')
         elseif GetTime() - S.readyAt > READY_TTL then
+            completeAttempt('EXPIRED')
             skip(deal)
             letGo()
             finishIdle()
@@ -507,6 +585,7 @@ function Snipe.Press(source)
     end
     if phase == PHASE.READY then
         if GetTime() < (S.armedAt or 0) then return end
+        if S.perf and not S.perf.pressAt then S.perf.pressAt = GetTime() end
         -- The wallet can change between the offer and the press.
         local n = sizeNow(deal)
         if n ~= S.n then
@@ -535,6 +614,7 @@ function Snipe.Skip()
     local deal = S.deal
     if not deal then return end
     if S.phase == PHASE.PREPARE or S.phase == PHASE.READY then
+        completeAttempt('SKIPPED')
         skip(deal)
         letGo()
         finishIdle()
