@@ -2,6 +2,31 @@
 
 A Windows desktop app and a WoW addon. Open the auction house and it scans the market by itself, works out what things are worth and how fast they really sell, and turns that into a set of limit orders. When something lists at or under a limit, or below what an NPC vendor pays, a **Confirm** button appears at your cursor. One press buys it.
 
+## Sniper speed tuning (development branch)
+
+**Current focus: below-vendor arbitrage.** auxForever's Sniper requests a paginated
+browse of the whole Auction House. A round over 4,000 results can take 20+ seconds;
+the server throttle cannot be safely removed by this addon.
+
+- The Forever Trader Sniper adapter now defaults to **fast**: 0.35 seconds between
+  completed rounds instead of auxForever's original 2.5 seconds. The existing
+  auction-house request throttle is still enforced by auxForever.
+- `/ft speed fast|normal|safe` selects 0.35s, 2.5s or 6s pauses.
+- New below-vendor candidates are ranked by potential immediate vendor profit
+  *before* auxForever opens their individual auctions. They still undergo auxForever's
+  original price and availability checks; a browse minimum might be bid-only.
+- `/ft scanstats` shows the most recent round's **first-page wait, full browse
+  time, verification time, vendor-priority count and received browse events**.
+  Use `/ft diag` for the same information alongside the other diagnostics.
+- The real limiting factor may be server pagination; reducing the between-round
+  pause only removes about 2.15 seconds per round. We need live timing figures
+  to justify a more invasive incremental-page or category-focused scanner.
+- Run Fast mode for 5–10 rounds, then send `/ft scanstats`. Switch to
+  `/ft speed normal` if requests slow down or the client reports throttling.
+
+**This is a performance experiment on `v0.4.0-live`, not a confirmed 23-to-2
+second improvement and not yet a stable release.**
+
 ## Setup
 
 1. Install Python 3 from [python.org](https://www.python.org/downloads/windows/), or use the EXE from GitHub Releases. Nothing else is needed.
