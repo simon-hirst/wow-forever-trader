@@ -471,6 +471,23 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertTrue(selection is not None)
         self.assertTrue(self.sim.lua.eval('function(a,b) return a == b end')(selection.record, magic))
 
+    def test_vendor_only_skips_usual_deals_before_individual_verification(self):
+        self.start()
+        judge = self.ns.Aux.env.judge
+        self.ns.Settings().bets = False
+        self.assertIsNone(judge(10, 100, 0, 3, 60, 1))
+        self.assertEqual(judge(10, 100, 13, 3, 60, 1)[0], 'vendor')
+        self.ns.Settings().bets = True
+        self.assertEqual(judge(10, 100, 0, 3, 60, 1)[0], 'usual')
+
+    def test_vendor_only_skips_unaffordable_browse_minimum(self):
+        self.start()
+        self.ns.Settings().bets = False
+        self.ns.Settings().reserve = 99800   # only 2s free
+        judge = self.ns.Aux.env.judge
+        self.assertEqual(judge(100, None, 150, 0, 60, 1)[0], 'vendor')
+        self.assertIsNone(judge(250, None, 300, 0, 60, 1))
+
     def test_opening_the_auction_house_starts_everything(self):
         self.start()
         self.sim.run(1)
