@@ -8,6 +8,7 @@ local DEFAULTS = {
     bets = true,        -- offer resale bets from the plan, not only below-vendor deals
     reserve = 500,      -- copper never spent
     spec = 0.25,        -- share of free cash for one bet that is not below vendor price
+    speed = 'fast',     -- 0.35s cooldown; aux still obeys the game's request throttle
 }
 -- The Windows Confirm button relays exactly one press of this key per click. Measured live
 -- (2026-11-05): the game ignores F13-F24 entirely, but takes a posted numpad divide, which
@@ -202,6 +203,7 @@ local function diagnostics()
         'plan: rev ' .. NS.Plan.rev .. ', limits ' .. tostring(NS.Plan.count or 0) .. ', slot ' .. NS.Plan.slot,
         'autoConfirm: ' .. tostring(NS.Settings().autoConfirm) .. ', bets ' .. tostring(NS.Settings().bets) .. ', reserve ' .. NS.Snipe.Coin(NS.Plan.reserve or NS.Settings().reserve),
         'confirm phase: ' .. tostring(NS.Snipe.state.phase),
+        'sniper scan: ' .. NS.Aux.StatsLine(),
         -- GetBindingByKey does not report override click bindings in this client, so show our own flag.
         'relay key ' .. RELAY_KEY .. ': ' .. (relayBound and 'bound to Confirm' or 'not bound'),
         'unknown events:' .. (NS.unknownEvents or ' none'),
@@ -219,6 +221,15 @@ SlashCmdList.FOREVERTRADER = function(input)
     local settings = NS.Settings()
     if command == 'diag' then
         diagnostics()
+    elseif command == 'scanstats' then
+        say(NS.Aux.StatsLine())
+    elseif command == 'speed' then
+        if NS.Aux.SetSpeed(rest) then
+            say('scan cooldown: ' .. NS.Aux.Speed() ..
+                ' (still throttled by the server; /ft scanstats shows where time goes)')
+        else
+            say('usage: /ft speed fast|normal|safe')
+        end
     elseif command == 'auto' or command == 'link' or command == 'autoconfirm' or command == 'bets' then
         local key = command == 'autoconfirm' and 'autoConfirm' or command
         settings[key] = rest == 'on' or (rest ~= 'off' and not settings[key])
@@ -254,6 +265,6 @@ SlashCmdList.FOREVERTRADER = function(input)
     elseif command == 'log' then
         for _, line in ipairs((ForeverTraderBridgeDB and ForeverTraderBridgeDB.log) or {}) do print(line) end
     else
-        say('/ft diag | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
+        say('/ft diag | scanstats | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
     end
 end
