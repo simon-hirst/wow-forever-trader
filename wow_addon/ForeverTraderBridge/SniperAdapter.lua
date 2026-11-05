@@ -125,7 +125,7 @@ function Aux.PreviewBrowsePage()
     -- If the client replaced the browse cache while searching, bail out of
     -- this round; never let a partial browse mark other auctions as gone.
     local after = C_AuctionHouse.GetBrowseResults()
-    if type(after) ~= 'table' or #after < before then
+    if type(after) ~= 'table' or #after < before or C_AuctionHouse.HasFullBrowseResults() then
         earlySessionDisabled = true
         NS.Log('incremental browse cache changed during verification; disabled pages for this session')
         Aux.scan.abort()
@@ -135,8 +135,8 @@ end
 
 function Aux.PreviewStats()
     local s = Aux.stats
-    return string.format('pages %s, early checks %d (this round %d), early bargains %d, early search %.1fs, first early %.1fs',
-        Aux.PagesOn() and 'on' or 'off', s.earlyChecks, s.earlyRoundChecks,
+    return string.format('pages %s%s, early checks %d (this round %d), early bargains %d, early search %.1fs, first early %.1fs',
+        Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '', s.earlyChecks, s.earlyRoundChecks,
         s.earlyDeals, s.earlySpent, s.earlyFirst)
 end
 
@@ -287,11 +287,20 @@ local function installHooks(env)
     if type(originalRequest) == 'function' then
         scanEnvironment.request = function(send, events, match, cached)
             local answer = originalRequest(send, events, match, cached)
-            if answer and answer ~= 'AUCTION_HOUSE_BROWSE_FAILURE' and not earlyInProgress and type(events) == 'table' then
+            if not earlyInProgress and type(events) == 'table' then
                 for _, event in ipairs(events) do
                     if event == 'AUCTION_HOUSE_BROWSE_RESULTS_UPDATED' or
                         event == 'AUCTION_HOUSE_BROWSE_RESULTS_ADDED' then
-                        Aux.PreviewBrowsePage()
+                        if not answer or answer == 'AUCTION_HOUSE_BROWSE_FAILURE' then
+                            if Aux.PagesOn() and Aux.stats.earlyRoundChecks > 0 and env.active then
+                                earlySessionDisabled = true
+                                NS.Log('browse pagination failed after early search: reverting to legacy')
+                                Aux.scan.abort()
+                                Aux.module.coro_wait()
+                            end
+                        elseif answer then
+                            Aux.PreviewBrowsePage()
+                        end
                         break
                     end
                 end
