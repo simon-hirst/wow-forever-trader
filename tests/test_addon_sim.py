@@ -84,6 +84,29 @@ class SniperSpeedAndPriority(unittest.TestCase):
         self.assertEqual([ordered[i].itemKey.itemID for i in range(1, 4)],
                          [BOLT, HATCHET, LINEN])
 
+    def test_gear_signatures_are_distinct_and_idempotent(self):
+        records = self.sim.lua.table_from([
+            self.sim.lua.table(auction_id=501, name='Sturdy Quarterstaff of Power',
+                               commodity=False, search_signature='4566:600:one'),
+            self.sim.lua.table(auction_id=502, name='Sturdy Quarterstaff of Magic',
+                               commodity=False, search_signature='4566:600:one')])
+        self.aux.UniqueGearSignatures(records)
+        a, b = records[1].search_signature, records[2].search_signature
+        self.assertNotEqual(a, b)
+        self.assertTrue(a.startswith('4566:600:one'))
+        self.aux.UniqueGearSignatures(records)
+        self.assertEqual((records[1].search_signature, records[2].search_signature), (a, b))
+
+    def test_completed_browse_is_counted_before_cancellable_verification(self):
+        self.sim.set_commodity(LINEN, [(10, 5)])
+        self.sim.open_auction_house()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.sim.phase_is('READY'), timeout=30))
+        # Selecting a fresh deal intentionally aborts the original aux scan.
+        self.assertGreaterEqual(self.aux.stats.browses, 1)
+        self.assertEqual(self.aux.stats.rounds, 0)
+        self.assertIn('browses', self.aux.StatsLine())
+
     def test_speed_modes_are_explicit_and_reject_unknown_names(self):
         self.assertEqual(self.aux.Speed(), 'fast')
         self.assertTrue(self.aux.SetSpeed('normal'))
@@ -91,7 +114,7 @@ class SniperSpeedAndPriority(unittest.TestCase):
         self.assertTrue(self.aux.SetSpeed('safe'))
         self.assertFalse(self.aux.SetSpeed('turbo'))
         self.assertEqual(self.aux.Speed(), 'safe')
-        self.assertIn('no finished rounds', self.aux.StatsLine())
+        self.assertIn('browse not returned yet', self.aux.StatsLine())
 
 
 @unittest.skipUnless(HAVE_LUA, 'needs lupa')
