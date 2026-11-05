@@ -10,6 +10,76 @@ NS.Aux = Aux
 local SNIPER_TAB_NAME = 'Sniper'
 local SNIPER_TAB_FALLBACK = 2
 
+-- The full 4,000+ item browse is server paginated and can dominate a Sniper
+-- round. Shorter pauses only remove idle time; they cannot bypass the AH's
+-- throttled-message gate. Keep a fallback if the realm starts dropping requests.
+local SPEED_PAUSE = {fast = 0.35, normal = 2.5, safe = 6}
+Aux.stats = {rounds = 0, rows = 0, priorities = 0, pages = 0, firstPage = 0, browse = 0, verify = 0}
+local pagesThisRound, firstPageAt = 0, nil
+
+function Aux.SetSpeed(speed)
+    speed = string.lower(tostring(speed or ''))
+    local pause = SPEED_PAUSE[speed]
+    if not pause then return false end
+    NS.Settings().speed = speed
+    if Aux.env then Aux.env.ROUND_PAUSE = pause end
+    return true
+end
+
+function Aux.Speed()
+    local mode = NS.Settings().speed
+    return SPEED_PAUSE[mode] and mode or 'fast'
+end
+
+function Aux.StatsLine()
+    local a = Aux.stats
+    if a.rounds == 0 then return 'no finished rounds yet (speed ' .. Aux.Speed() .. ')' end
+    return string.format('round %d: %d items, browse %.1fs (first page %.1fs, %d events), candidate checks %.1fs, %d vendor priorities, speed %s',
+        a.rounds, a.rows, a.browse, a.firstPage, a.pages, a.verify, a.priorities, Aux.Speed())
+end
+
+-- Return a new array, leaving the game's browse-result table unmodified.
+-- The existing Sniper still does every live auction verification; the ranking
+-- merely puts the best NEW below-vendor candidates first after the browse ends.
+-- A browse minimum may be a BID, so this never authorises a purchase.
+function Aux.RankVendorCandidates(results, known, keyString, budget)
+    if type(results) ~= 'table' or type(keyString) ~= 'function' then return results, 0 end
+    local getInfo = NS.GetItemInfo
+    if not getInfo then return results, 0 end
+    budget = budget or (GetMoney() - (NS.Settings().reserve or 0))
+    if budget <= 0 then return results, 0 end
+    local priority, rest = {}, {}
+    for i = 1, #results do
+        local row = results[i]
+        local key = row and row.itemKey
+        local id = key and key.itemID
+        local price = row and row.minPrice or 0
+        local quantity = row and row.totalQuantity or 0
+        local score
+        if id and price > 0 and quantity > 0 and price <= budget
+            and (not known or known[keyString(key)] ~= price) then
+            local ok, _, _, quality, _, _, _, _, _, _, _, vendor = pcall(getInfo, id)
+            if ok and quality and quality > 0 and type(vendor) == 'number' and vendor > price then
+                score = (vendor - price) * math.min(quantity, 8)
+            end
+        end
+        if score and score > 0 then
+            priority[#priority + 1] = {row = row, score = score, index = i}
+        else
+            rest[#rest + 1] = row
+        end
+    end
+    if #priority == 0 then return results, 0 end
+    table.sort(priority, function(a, b)
+        if a.score == b.score then return a.index < b.index end
+        return a.score > b.score
+    end)
+    local ordered = {}
+    for _, record in ipairs(priority) do ordered[#ordered + 1] = record.row end
+    for _, row in ipairs(rest) do ordered[#ordered + 1] = row end
+    return ordered, #priority
+end
+
 local function findSniperEnv()
     local root = _G.aux_frame
     if not root or type(getfenv) ~= 'function' then return nil end
@@ -43,10 +113,47 @@ end
 local function installHooks(env)
     local checkList = env.check_list
     Aux.checkItems = checkList
+
+    local startRound = env.start_round
+    env.start_round = function(...)
+        Aux.stats.roundAt = GetTime()
+        pagesThisRound, firstPageAt = 0, nil
+        return startRound(...)
+    end
+    env.ROUND_PAUSE = SPEED_PAUSE[Aux.Speed()]
+
+    -- Observe browse events without making ANY extra AH API calls. Distinguish
+    -- the first-page wait from pagination and subsequent item verification.
+    local observer = CreateFrame('Frame')
+    NS.Listen(observer, 'AUCTION_HOUSE_BROWSE_RESULTS_UPDATED')
+    NS.Listen(observer, 'AUCTION_HOUSE_BROWSE_RESULTS_ADDED')
+    observer:SetScript('OnEvent', function()
+        if env.active and not env.checking then
+            pagesThisRound = pagesThisRound + 1
+            if not firstPageAt then firstPageAt = GetTime() end
+        end
+    end)
+    Aux.browseObserver = observer
+
     env.check_list = function(results, seen)
+        local t0 = GetTime()
+        local started = Aux.stats.roundAt or t0
+        local browseSeconds = math.max(0, t0 - started)
         local ok, err = pcall(NS.Market.OnBrowse, results)
         if not ok then NS.Log('market error: ' .. tostring(err)) end
-        return checkList(results, seen)
+        local ranked, count = Aux.RankVendorCandidates(results, env.known,
+            Aux.scan.item_key_string, GetMoney() - (NS.Settings().reserve or 0))
+        local response = checkList(ranked, seen)
+        local stats = Aux.stats
+        stats.rounds = stats.rounds + 1
+        stats.rows = #results
+        stats.priorities = count
+        stats.pages = pagesThisRound
+        stats.firstPage = firstPageAt and firstPageAt - started or browseSeconds
+        stats.browse = browseSeconds
+        stats.verify = math.max(0, GetTime() - t0)
+        if stats.rounds % 5 == 0 then NS.Log('sniper timing ' .. Aux.StatsLine()) end
+        return response
     end
 
     local itemFacts, judge = env.item_facts, env.judge
