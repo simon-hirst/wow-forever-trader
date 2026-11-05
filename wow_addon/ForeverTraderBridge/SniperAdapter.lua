@@ -128,6 +128,12 @@ function Aux.PreviewBrowsePage()
         end
         if newDeal and newDeal ~= beforeDeal and not newDeal.deal_gone
             and not newDeal.deal_bought then
+            -- Attach monotonic timing evidence directly to the deal picked up
+            -- by Snipe.lua. Never infer these timings from the wall-clock
+            -- "found 2m ago" label.
+            newDeal.ft_first_page_at = firstPageAt or now
+            newDeal.ft_verified_at = GetTime()
+            newDeal.ft_incremental = true
             Aux.stats.earlyDeals = Aux.stats.earlyDeals + 1
             NS.Log('early page bargain: ' .. tostring(c.keyStr) ..
                 ' +at least ' .. tostring(c.profit) .. 'c per unit')
