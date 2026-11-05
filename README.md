@@ -31,6 +31,47 @@ the server throttle cannot be safely removed by this addon.
 **This is a performance experiment on `v0.4.0-live`, not a confirmed 23-to-2
 second improvement and not yet a stable release.**
 
+## Incremental page sniping (experimental, development branch)
+
+A normal full-market browse on EU Horde returned about 4,600 items in 18.3 seconds,
+but **the first of ten browse result pages arrived after only 1.4 seconds**. The
+new optional page interceptor offers immediate **below-vendor** opportunities
+before auxForever waits for every remaining page.
+
+- `/ft pages on` enables the experiment (default for this development branch).
+- `/ft pages off` immediately disables it without reloading the game.
+- `/ft pagestats` displays early checks, successful early bargain detections,
+  cumulative early search time and first-check latency.
+- `/ft scanstats` still reports full browse/verification timings and now includes
+  early detections.
+- `/ft bets off` keeps trading vendor-only; `/ft speed normal` is the
+  recommended baseline while testing server compatibility.
+
+After **each successful incomplete browse page**, the addon reads the results
+already received and may call auxForever's existing `check_item` routine for
+the highest-value candidate. This live item lookup is serialised inside the
+**same aux.core.scan coroutine and server throttle** before the next browse-page
+request. It NEVER buys automatically: the same live-price and cursor-confirm
+checks apply. The full browse continues normally unless the user selects a
+deal and auxForever intentionally interrupts the round.
+
+Safeguards:
+- At most **one early item lookup per page and four per round**.
+- Early candidates need at least **25c/unit vendor margin** (or the user's
+  higher minimum); smaller finds still go through the normal completed browse.
+- Browse price is only a hint: bid-only rows do not authorise any purchase.
+- If the client's browse cache shrinks, unexpectedly becomes "full" during an
+  item search, or pagination fails after interleaving, the addon aborts the
+  incomplete round and disables incremental mode for that session.
+- If buying, selection, or paging behaves unexpectedly, enter `/ft pages off`
+  immediately and restart WoW with the last known-good Bridge if necessary.
+
+**Compatibility caveat:** GitHub CI tests a simulated paginated AH and auxForever's
+real Lua routines. This is *not yet verified on the live Forever realm*. If the
+server serialisation or cached browse API differs, the feature might disable
+itself or interrupt a round. Record the `/ft pagestats` output and the first
+couple of browse/Confirm events to assess actual latency.
+
 ## Setup
 
 1. Install Python 3 from [python.org](https://www.python.org/downloads/windows/), or use the EXE from GitHub Releases. Nothing else is needed.
