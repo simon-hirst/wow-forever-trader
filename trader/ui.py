@@ -123,6 +123,7 @@ class App(tk.Tk):
             ttk.Label(card,textvariable=v,style='CardValue.TLabel').pack(anchor='w',pady=(7,0))
         self.tabs=ttk.Notebook(outer);self.tabs.pack(fill='both',expand=True)
         self.strategy_tab=ttk.Frame(self.tabs)
+        self.performance_tab=ttk.Frame(self.tabs)
         self.market_tab=ttk.Frame(self.tabs);self.signal_tab=ttk.Frame(self.tabs)
         self.movers_tab=ttk.Frame(self.tabs)
         self.book_tab=ttk.Frame(self.tabs)
@@ -132,10 +133,10 @@ class App(tk.Tk):
         self.trades_tab=ttk.Frame(self.tabs);self.settings_tab=ttk.Frame(self.tabs)
         self.calc_tab=ttk.Frame(self.tabs)
         self.help_tab=ttk.Frame(self.tabs)
-        for frame,label in [(self.strategy_tab,'STRATEGY'),(self.market_tab,'MARKET'),(self.book_tab,'ORDER BOOK'),(self.vendor_tab,'VENDOR FLIPS'),(self.movers_tab,'MARKET MOVERS'),(self.signal_tab,'OPPORTUNITIES'),(self.watch_tab,'WATCHLIST'),
+        for frame,label in [(self.strategy_tab,'STRATEGY'),(self.performance_tab,'PERFORMANCE'),(self.market_tab,'MARKET'),(self.book_tab,'ORDER BOOK'),(self.vendor_tab,'VENDOR FLIPS'),(self.movers_tab,'MARKET MOVERS'),(self.signal_tab,'OPPORTUNITIES'),(self.watch_tab,'WATCHLIST'),
                              (self.activity_tab,'AUTO ACTIVITY'),(self.trades_tab,'TRADE JOURNAL'),(self.calc_tab,'FLIP CALCULATOR'),(self.settings_tab,'SETTINGS'),(self.help_tab,'HOW IT WORKS')]:
             self.tabs.add(frame,text=label)
-        self._strategy_tab();self._market_tab();self._book_tab();self._vendor_tab();self._movers_tab();self._signal_tab();self._watch_tab();self._trades_tab();self._activity_tab();self._calc_tab();self._settings_tab();self._help_tab()
+        self._strategy_tab();self._performance_tab();self._market_tab();self._book_tab();self._vendor_tab();self._movers_tab();self._signal_tab();self._watch_tab();self._trades_tab();self._activity_tab();self._calc_tab();self._settings_tab();self._help_tab()
         status=ttk.Frame(outer);status.pack(fill='x',pady=(12,0))
         ttk.Label(status,textvariable=self.status_var,style='Hint.TLabel').pack(side='left')
         self.link_detail_var=tk.StringVar(value='Link: waiting for the auction house')
@@ -362,6 +363,100 @@ class App(tk.Tk):
         cols={'name':'ITEM','price':'CURRENT','median':'PAST MEDIAN','discount':'DISCOUNT','potential':'THEORETICAL NET / UNIT','signal':'ACTION'}
         self.signal_tree=self._make_tree(self.signal_tab,cols,{'name':280,'price':100,'median':120,'discount':100,'potential':180,'signal':100})
         ttk.Label(self.signal_tab,text='RECHECK = price ≥20% below prior median; excludes deposits and assumes a buyer exists. Never an automatic BUY order.',style='Hint.TLabel').pack(anchor='w',pady=8)
+    def _performance_tab(self):
+        """Outcome telemetry (fast live link) and audited vendor receipts."""
+        outer=self.performance_tab
+        header=ttk.Frame(outer,padding=(0,14,0,10));header.pack(fill='x')
+        ttk.Label(header,text='SNIPER PERFORMANCE',style='Title.TLabel').pack(side='left')
+        self.perf_note=tk.StringVar(value='Waiting for Sniper telemetry')
+        ttk.Label(header,textvariable=self.perf_note,style='Hint.TLabel').pack(side='right')
+        ttk.Label(outer,text='Only confirmed, matched AH purchases and NPC sales count as realised vendor profit. '
+                  'Sniper margins are forecasts until sold; lost offers are not proof another player bought them.',
+                  style='Hint.TLabel',wraplength=1090).pack(anchor='w',pady=(0,12))
+        metrics=ttk.Frame(outer);metrics.pack(fill='x',pady=(0,14))
+        self.perf_vars={}
+        labels=[('vendor','VERIFIED VENDOR P&L'),('rate','EST. GOLD / ACTIVE HOUR'),
+                ('attempts','SNIPER BOUGHT / LOST'),('capture','ATTEMPT WIN RATE'),
+                ('latency','MEDIAN PAGE → PURCHASE'),('review','RECEIPTS NEEDING REVIEW')]
+        for key,label in labels:
+            tile=ttk.Frame(metrics,style='Card.TFrame',padding=(10,10))
+            tile.pack(side='left',fill='x',expand=True,padx=(0,7))
+            ttk.Label(tile,text=label,style='CardName.TLabel').pack(anchor='w')
+            v=tk.StringVar(value='—');self.perf_vars[key]=v
+            ttk.Label(tile,textvariable=v,style='CardValue.TLabel').pack(anchor='w',pady=(4,0))
+        ttk.Label(outer,text='RECENT SNIPER ACTIVITY  ·  green = bought  ·  red = lost',
+                  style='Hint.TLabel').pack(anchor='w',pady=(0,5))
+        self.perf_chart=tk.Canvas(outer,height=102,bg=PANEL,highlightthickness=0)
+        self.perf_chart.pack(fill='x',pady=(0,12))
+        cols={'time':'UTC','item':'ITEM','outcome':'RESULT','source':'SCAN','qty':'QTY',
+              'cost':'SPEND','est':'EST. MARGIN','page':'PAGE → FINISH','offer':'OFFER → FINISH'}
+        self.perf_tree=self._make_tree(outer,cols,
+            {'time':130,'item':240,'outcome':100,'source':72,'qty':55,
+             'cost':90,'est':98,'page':115,'offer':120})
+        self.perf_tree.tag_configure('bought',foreground=GREEN)
+        self.perf_tree.tag_configure('lost',foreground=RED)
+        ttk.Label(outer,text='Recorded attempts are deduplicated between the live data link and SavedVariables. '
+                  'Vendor receipts may remain pending until /reload, after which confirmed P&L reconciles. '
+                  'The hourly rate uses observed active intervals, not a complete in-game clock.',
+                  style='Hint.TLabel',wraplength=1080).pack(anchor='w',pady=(9,0))
+
+    def _draw_performance_chart(self,rows):
+        canvas=self.perf_chart
+        canvas.delete('all')
+        width=max(680,canvas.winfo_width())
+        left,right,top,bottom=20,width-15,14,85
+        canvas.create_line(left,bottom,right,bottom,fill=MUTED)
+        # Twelve five-minute bins, ending in the current five-minute bucket.
+        now=int(time.time());end=now//300*300+300;start=end-12*300
+        buckets=[[0,0] for _ in range(12)]
+        for uid,ts,char,item,name,outcome,*_ in rows:
+            i=(ts-start)//300
+            if 0<=i<12 and outcome in ('BOUGHT','LOST'):
+                buckets[i][0 if outcome=='BOUGHT' else 1]+=1
+        peak=max([1]+[a+b for a,b in buckets])
+        cell=(right-left)/12
+        for i,(bought,lost) in enumerate(buckets):
+            x=left+i*cell+cell*0.2;w=cell*0.6
+            h1=(bought/peak)*(bottom-top)
+            h2=(lost/peak)*(bottom-top)
+            if bought:canvas.create_rectangle(x,bottom-h1,x+w,bottom,fill=GREEN,outline='')
+            if lost:canvas.create_rectangle(x,bottom-h1-h2,x+w,bottom-h1,fill=RED,outline='')
+            if i%2==0:
+                lab=time.strftime('%H:%M',time.gmtime(start+i*300))
+                canvas.create_text(x+w/2,bottom+10,text=lab,fill=MUTED,font=('Segoe UI',8))
+        if sum(sum(b) for b in buckets)==0:
+            canvas.create_text(width/2,top+27,text='No recent Sniper outcomes yet',
+                               fill=MUTED,font=('Segoe UI',11))
+        canvas.create_text(right,top,text='Past 60 minutes',fill=MUTED,
+                           anchor='ne',font=('Segoe UI',9))
+
+    def _update_performance(self):
+        perf=self.store.sniper_performance()
+        vendor=perf['confirmed_vendor']
+        rate=perf['profit_per_active_hour']
+        self.perf_vars['vendor'].set(fmt_copper(vendor['realised']))
+        self.perf_vars['rate'].set(fmt_copper(round(rate))+'/h' if rate is not None else '—')
+        self.perf_vars['attempts'].set(f"{perf['bought']} / {perf['lost']}")
+        capture=perf['capture_rate']
+        self.perf_vars['capture'].set(f'{capture:.0%}' if capture is not None else '—')
+        latency=perf['median_page_to_buy_ms']
+        self.perf_vars['latency'].set(f'{latency/1000:.2f}s' if latency is not None else '—')
+        self.perf_vars['review'].set(str(self.store.review_count()))
+        self.perf_note.set(f"{perf['attempts']} tracked attempts · {perf['early_buys']} early-page buys · "
+                           f"{vendor['matched_qty']} matched NPC-sold units · "
+                           f"{vendor['unmatched_qty']} unmatched")
+        rows=self.store.recent_snipe_attempts(limit=1000)
+        self.perf_tree.delete(*self.perf_tree.get_children())
+        for uid,ts,char,item,name,outcome,qty,cost,estimate,early,page_ready,page_finish,offer_ready,offer_finish,reason,source in rows[:350]:
+            page=f'{page_finish/1000:.2f}s' if page_finish and early else '—'
+            offer=f'{offer_finish/1000:.2f}s' if offer_finish else '—'
+            self.perf_tree.insert('',tk.END,iid=uid,
+                values=(time.strftime('%d %b %H:%M:%S',time.gmtime(ts)),name,outcome,
+                        source.upper(),qty,fmt_copper(cost) if cost else '—',
+                        fmt_copper(estimate) if estimate else '—',page,offer),
+                tags=('bought',) if outcome=='BOUGHT' else ('lost',) if outcome=='LOST' else ())
+        self._draw_performance_chart(rows)
+
     def _trades_tab(self):
         banner=ttk.Frame(self.trades_tab,padding=(0,15,0,10));banner.pack(fill='x')
         self.ledger_var=tk.StringVar(value='No recorded trades')
@@ -588,17 +683,18 @@ class App(tk.Tk):
             payload=parse_bridge(path)
             imported=self.store.ingest_books(payload)
             activity=self.store.ingest_activity(payload)
+            attempts=self.store.ingest_snipe_metrics(payload)
             for bucket,data in payload.get('bars',[]):
                 marketdata.ingest_bars(self.store.db,bucket,marketdata.parse_bridge_bars(data))
             for ts,data in payload.get('snapshots',[]):
                 if marketdata.ingest_snapshot(self.store.db,ts,marketdata.parse_bridge_snapshot(data),True,'bridge'):
                     self.autopilot.request_analysis()
             self.last_bridge_sig=sig
-            if imported or activity['new_events'] or activity['wallets'] or activity['wallet_changes']:
-                self.status_var.set(f'Bridge: {imported} books, {activity["new_events"]} events '
+            if imported or attempts or activity['new_events'] or activity['wallets'] or activity['wallet_changes']:
+                self.status_var.set(f'Bridge: {imported} books, {attempts} Sniper outcomes, {activity["new_events"]} events '
                     f'({activity["confirmed"]} confirmed), {activity["wallets"]} wallet updates, '
                     f'{activity["wallet_changes"]} wallet changes; /reload to sync')
-            return imported+activity['new_events']+activity['wallets']+activity['wallet_changes']
+            return imported+attempts+activity['new_events']+activity['wallets']+activity['wallet_changes']
         except (OSError,ParseError,ValueError) as e:
             if not silent:self.status_var.set('Bridge import failed: '+str(e))
             return 0
@@ -728,7 +824,7 @@ class App(tk.Tk):
                     fmt_copper(b['buy_price']),fmt_copper(b.get('vendor_copper') or 0),
                     fmt_copper(b['gross_theoretical']) if b['gross_theoretical'] is not None else '—',
                     b['status']),tags=('signal',))
-        self._update_ledger();self._update_activity();self._update_cards()
+        self._update_ledger();self._update_activity();self._update_cards();self._update_performance()
     def _update_activity(self):
         self.activity_tree.delete(*self.activity_tree.get_children())
         rows=self.store.automatic_events()
