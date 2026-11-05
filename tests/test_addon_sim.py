@@ -46,6 +46,55 @@ def frame_to_bgra(sim, ftype, seq, payload: bytes, noise=0, seed=1) -> bytes:
 
 
 @unittest.skipUnless(HAVE_LUA, 'needs lupa')
+class SniperSpeedAndPriority(unittest.TestCase):
+    """Priority ordering never alters browse data or skips normal candidates."""
+
+    def setUp(self):
+        self.sim = WowSim()
+        self.sim.set_items(ITEMS)
+        self.sim.load_bridge()
+        self.sim.login()
+        self.aux = self.sim.bridge_ns.Aux
+        self.key = self.sim.lua.eval('function(itemKey) return tostring(itemKey.itemID) end')
+
+    def _rows(self, entries):
+        rows = self.sim.lua.table()
+        for i, (id_, price, quantity) in enumerate(entries, 1):
+            rows[i] = self.sim.lua.table(
+                itemKey=self.sim.lua.table(itemID=id_),
+                minPrice=price, totalQuantity=quantity)
+        return rows
+
+    def test_vendor_savings_receive_priority_without_modifying_browse_results(self):
+        rows = self._rows([
+            (CLOAK, 30, 8), (LINEN, 10, 6),
+            (BOLT, 35, 2), (HATCHET, 650, 1), (LINEN, 18, 2)])
+        ordered, count = self.aux.RankVendorCandidates(
+            rows, self.sim.lua.table(), self.key, 1000)
+        self.assertEqual(count, 3)
+        self.assertEqual([ordered[i].itemKey.itemID for i in range(1, 6)],
+                         [HATCHET, LINEN, BOLT, CLOAK, LINEN])
+        self.assertEqual(rows[1].itemKey.itemID, CLOAK)  # original remains unchanged
+
+    def test_unchanged_or_unaffordable_items_do_not_jump_the_queue(self):
+        rows = self._rows([(HATCHET, 650, 1), (LINEN, 10, 2), (BOLT, 30, 4)])
+        known = self.sim.lua.table_from({str(LINEN): 10})
+        ordered, count = self.aux.RankVendorCandidates(rows, known, self.key, 100)
+        self.assertEqual(count, 1)
+        self.assertEqual([ordered[i].itemKey.itemID for i in range(1, 4)],
+                         [BOLT, HATCHET, LINEN])
+
+    def test_speed_modes_are_explicit_and_reject_unknown_names(self):
+        self.assertEqual(self.aux.Speed(), 'fast')
+        self.assertTrue(self.aux.SetSpeed('normal'))
+        self.assertEqual(self.aux.Speed(), 'normal')
+        self.assertTrue(self.aux.SetSpeed('safe'))
+        self.assertFalse(self.aux.SetSpeed('turbo'))
+        self.assertEqual(self.aux.Speed(), 'safe')
+        self.assertIn('no finished rounds', self.aux.StatsLine())
+
+
+@unittest.skipUnless(HAVE_LUA, 'needs lupa')
 class LinkEncoding(unittest.TestCase):
     def setUp(self):
         self.sim = WowSim()
