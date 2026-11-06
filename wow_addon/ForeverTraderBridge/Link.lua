@@ -34,9 +34,18 @@ local strip, blocks
 local active, closingAt = false, nil
 local seq = 0
 local queue, head, tail = {}, 1, 0
+-- Critical trade receipts must jump ahead of full-market listing chunks.
+-- Without a second queue, a vendor sale can wait behind minutes of AH
+-- snapshot traffic and then seem to "appear only after /reload".
+local urgentQueue, urgentHead, urgentTail = {}, 1, 0
 local framesSince, elapsedSince = 0, 0
 local stateDirty, nextState = true, 0
 Link.sent = 0
+Link.droppedUrgent = 0
+
+local function queued()
+    return tail - head + 1 + urgentTail - urgentHead + 1
+end
 
 local function createStrip()
     if strip then return end
@@ -118,17 +127,36 @@ end
 
 function Link.Enqueue(ftype, payload)
     if #payload > Link.MAX_PAYLOAD then return false end
-    if tail - head + 1 >= MAX_QUEUE then
-        queue[head] = nil
-        head = head + 1
+    local urgent = ftype == Link.TYPE.LOG and
+        (string.sub(payload,1,7) == 'FTREC1|' or string.sub(payload,1,6) == 'FTPM1|')
+    if queued() >= MAX_QUEUE then
+        if head <= tail then
+            -- Sacrifice a low-priority market chunk before a trade receipt.
+            -- The saved-variable mirror can recover ordinary snapshot data.
+            queue[head] = nil
+            head = head + 1
+        elseif not urgent then
+            return false
+        else
+            -- This only occurs if thousands of unsent receipts accumulate
+            -- while the game is not visible. They still persist to disk.
+            urgentQueue[urgentHead] = nil
+            urgentHead = urgentHead + 1
+            Link.droppedUrgent = Link.droppedUrgent + 1
+        end
     end
-    tail = tail + 1
-    queue[tail] = {ftype, payload}
+    if urgent then
+        urgentTail = urgentTail + 1
+        urgentQueue[urgentTail] = {ftype, payload}
+    else
+        tail = tail + 1
+        queue[tail] = {ftype, payload}
+    end
     return true
 end
 
 function Link.QueueLength()
-    return tail - head + 1
+    return queued()
 end
 
 function Link.MarkState()
@@ -167,7 +195,7 @@ function Link.Tick(elapsed)
     -- Hold each frame for two rendered frames so the reader cannot miss or tear it.
     if framesSince < 2 or elapsedSince < HOLD_SECONDS then return end
     local now = GetTime()
-    if closingAt and (now >= closingAt or tail < head) then
+    if closingAt and (now >= closingAt or queued() == 0) then
         Link.Stop()
         return
     end
@@ -175,6 +203,11 @@ function Link.Tick(elapsed)
     if stateDirty or now >= nextState then
         ftype, payload = Link.TYPE.STATE, NS.BuildState()
         stateDirty, nextState = false, now + STATE_SECONDS
+    elseif urgentHead <= urgentTail then
+        local entry = urgentQueue[urgentHead]
+        urgentQueue[urgentHead] = nil
+        urgentHead = urgentHead + 1
+        ftype, payload = entry[1], entry[2]
     elseif head <= tail then
         local entry = queue[head]
         queue[head] = nil
