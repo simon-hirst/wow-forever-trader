@@ -84,6 +84,21 @@ class SniperSpeedAndPriority(unittest.TestCase):
         self.assertEqual(self.aux.ReportUnavailable(deal), 25)  # changed quantity resets
         self.assertFalse(self.aux.IsGoneCooldown('8178:0',90,1))
 
+    def test_deadcache_kill_switch_immediately_reenables_stale_candidates(self):
+        deal=self.sim.lua.table(deal_key='8178:0',unit_buyout_price=100,
+                                ft_browse_price=100,ft_browse_qty=1)
+        self.assertEqual(self.aux.ReportUnavailable(deal),25)
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.sim.g.SlashCmdList.FOREVERTRADER('deadcache off')
+        self.assertFalse(self.aux.DeadCacheOn())
+        self.assertEqual(self.aux.GoneStats(),0)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertEqual(self.aux.ReportUnavailable(deal),0)
+        self.sim.g.SlashCmdList.FOREVERTRADER('deadcache on')
+        self.assertTrue(self.aux.DeadCacheOn())
+        self.assertEqual(self.aux.ReportUnavailable(deal),25)
+        self.assertIn('deadcache on',self.aux.PreviewStats())
+
     def test_gone_cooldown_is_scoped_to_item_key_not_every_other_item(self):
         deal=self.sim.lua.table(deal_key='8178:0',unit_buyout_price=100,
                                 ft_browse_price=100,ft_browse_qty=1)
