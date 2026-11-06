@@ -419,6 +419,37 @@ class Sizing(unittest.TestCase):
         self.assertEqual(self.size(gear, 1199, 500, 0.25, None), (0, 0, 0))
 
 
+@unittest.skipUnless(HAVE_LUA, 'needs lupa')
+class LinkReceiptPriority(unittest.TestCase):
+    def setUp(self):
+        self.sim=WowSim()
+        self.sim.set_items(ITEMS)
+        self.sim.load_bridge()
+        self.sim.login()
+        self.link=self.sim.bridge_ns.Link
+        self.sim.bridge_ns.Settings().link=True
+        self.link.Open()
+
+    def test_sale_receipt_jumps_ahead_of_market_snapshot_backlog(self):
+        for index in range(30):
+            self.assertTrue(self.link.Enqueue(self.link.TYPE.L3, 'market chunk '+str(index)))
+        self.assertTrue(self.link.Enqueue(self.link.TYPE.LOG,
+            'FTREC1|1|1793863080|Mage-PvP|VENDOR_SELL|2589|2|26|confirmed'))
+        self.assertEqual(self.link.UrgentQueueLength(),1)
+        self.assertEqual(self.link.QueueLength(),31)
+        for _ in range(4):self.link.Tick(0.2)
+        self.assertEqual(self.link.urgentSent,1)
+        self.assertEqual(self.link.UrgentQueueLength(),0)
+        self.assertGreater(self.link.QueueLength(),0)
+
+    def test_vendor_closing_does_not_discard_pending_critical_receipt(self):
+        self.assertTrue(self.link.Enqueue(self.link.TYPE.LOG,
+            'FTREC1|2|1793863080|Mage-PvP|VENDOR_SELL|2589|1|13|confirmed'))
+        self.link.Close()
+        for _ in range(4):self.link.Tick(0.2)
+        self.assertEqual(self.link.urgentSent,1)
+        self.assertEqual(self.link.droppedUrgent,0)
+
 @unittest.skipUnless(HAVE_LUA and find_aux(), 'needs lupa and an installed auxForever')
 class ConfirmWithRealAux(unittest.TestCase):
     def setUp(self):
