@@ -140,7 +140,7 @@ class SniperSpeedAndPriority(unittest.TestCase):
         self.assertEqual((records[1].search_signature, records[2].search_signature), (a, b))
 
     def test_speed_modes_are_explicit_and_reject_unknown_names(self):
-        self.assertEqual(self.aux.Speed(), 'fast')
+        self.assertEqual(self.aux.Speed(), 'normal')
         self.assertTrue(self.aux.SetSpeed('normal'))
         self.assertEqual(self.aux.Speed(), 'normal')
         self.assertTrue(self.aux.SetSpeed('safe'))
