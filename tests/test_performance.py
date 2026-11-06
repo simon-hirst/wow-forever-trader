@@ -113,6 +113,66 @@ class TestPerformance(unittest.TestCase):
         self.assertEqual(row[-1],1)
         self.assertEqual(self.store.sniper_performance()['bought'],0)
 
+    def test_npc_sales_rows_display_verified_proceeds_profit_and_unknown_cost(self):
+        db=self.store.db
+        add_receipt(db,10,'Mage-PvP','AH_BUY',2589,3,101,T0)
+        add_receipt(db,11,'Mage-PvP','VENDOR_SELL',2589,2,100,T0+60)
+        add_receipt(db,12,'Mage-PvP','VENDOR_SELL',2589,1,50,T0+120)
+        add_receipt(db,13,'Mage-PvP','VENDOR_SELL',1234,1,90,T0+130)
+        add_receipt(db,14,'Mage-PvP','VENDOR_SELL',1234,1,90,T0+140,False)
+        db.execute("""INSERT INTO automatic_events
+            (uid,character,time,kind,item_id,qty,total,status,note)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            ('15','Mage-PvP',T0+150,'VENDOR_MONEY','0',0,200,'review','unknown item'))
+        db.commit()
+        sales=self.store.recent_vendor_sales()
+        self.assertEqual([r[0] for r in sales],['15','14','13','12','11'])
+        self.assertEqual([r[-1] for r in sales],['REVIEW','REVIEW','NO BUY RECORD','MATCHED','MATCHED'])
+        self.assertEqual(sales[0][-2],None)
+        self.assertEqual(sales[2][-2],None)
+        self.assertEqual(sales[3][-2],16)
+        self.assertEqual(sales[4][-2],33)
+        self.assertEqual(sales[3][5],50)
+        self.assertEqual(sales[4][5],100)
+        self.assertEqual(sum(r[-2] for r in sales if r[-2] is not None),
+                         self.store.sniper_performance()['confirmed_vendor']['realised'])
+
+    def test_partial_vendor_sale_only_attributes_proven_purchase_cost(self):
+        db=self.store.db
+        add_receipt(db,10,'Mage-PvP','AH_BUY',2589,1,10,T0)
+        add_receipt(db,11,'Mage-PvP','VENDOR_SELL',2589,2,40,T0+60)
+        db.commit()
+        sale=self.store.recent_vendor_sales()[0]
+        self.assertEqual(sale[-1],'PARTIAL')
+        self.assertEqual(sale[6],1)
+        self.assertEqual(sale[7],10)  # 1 unit sold for 20c, cost 10c
+        self.assertEqual(self.store.sniper_performance()['confirmed_vendor']['realised'],10)
+
+    def test_live_receipt_signal_triggers_immediate_desktop_refresh(self):
+        worker=Autopilot(pathlib.Path(self.temp.name),None,lambda:{})
+        buy='FTREC1|1|1793863010|Mage-PvP|AH_BUY|2589|2|20|confirmed'
+        sold='FTREC1|2|1793863080|Mage-PvP|VENDOR_SELL|2589|2|26|confirmed'
+        for idx,message in enumerate((buy,sold)):
+            worker._handle_frame(self.store,Frame(type=TYPE_LOG,seq=idx,payload=message.encode()))
+        self.assertEqual(worker.live_changes.qsize(),2)
+        self.assertEqual(self.store.recent_vendor_sales()[0][-2],6)
+        worker._handle_frame(self.store,Frame(type=TYPE_LOG,seq=3,payload=sold.encode()))
+        self.assertEqual(worker.live_changes.qsize(),2)  # /reload/live duplicates ignored
+
+    def test_npc_sales_export_contains_receipts_and_unknown_cost_status(self):
+        db=self.store.db
+        add_receipt(db,10,'Mage-PvP','AH_BUY',2589,1,10,T0)
+        add_receipt(db,11,'Mage-PvP','VENDOR_SELL',2589,1,13,T0+60)
+        add_receipt(db,12,'Mage-PvP','VENDOR_SELL',1234,1,90,T0+100)
+        db.commit()
+        path=pathlib.Path(self.temp.name)/'vendor-export.zip'
+        self.store.export_bundle(path)
+        with zipfile.ZipFile(path) as z:
+            content=z.read('npc_vendor_sales.csv').decode()
+            self.assertIn('matched_profit_copper',content)
+            self.assertIn('NO BUY RECORD',content)
+            self.assertIn('11,',content)
+
     def test_matched_vendor_profit_tracks_character_and_exact_copper(self):
         db=self.store.db
         add_receipt(db,1,'Mage-PvP','AH_BUY',2589,3,101,T0)
