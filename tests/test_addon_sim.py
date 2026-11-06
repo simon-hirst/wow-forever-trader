@@ -475,7 +475,7 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertGreater(rows[0].page_ready_ms,0)
         self.assertGreater(rows[0].page_finish_ms,rows[0].page_ready_ms)
 
-    def test_unavailable_listing_is_lost_without_buying_or_inventing_profit(self):
+    def test_unavailable_listing_is_recorded_as_unavailable_without_buying(self):
         self.sim.set_commodity(LINEN, [(10, 5)])
         self.start()
         self.wait_ready()
@@ -486,7 +486,7 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.sim.run(0.1)
         rows=list(self.sim.lua.eval('ForeverTraderBridgeDB.snipe_metrics').values())
         self.assertEqual(len(rows),1)
-        self.assertEqual(rows[0].outcome,'LOST')
+        self.assertEqual(rows[0].outcome,'UNAVAILABLE')
         self.assertEqual(self.sim.bought(), [])
 
     def test_browse_is_counted_even_when_quick_buy_interrupts_the_round(self):
