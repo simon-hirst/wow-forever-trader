@@ -75,6 +75,33 @@ server serialisation or cached browse API differs, the feature might disable
 itself or interrupt a round. Record the `/ft pagestats` output and the first
 couple of browse/Confirm events to assess actual latency.
 
+## Sniper outcomes: data-quality correction (development)
+
+The first live dashboard revealed a useful cross-check: auxForever had
+marked **Shadow Wand** as bought while the newer attempt journal marked
+its attempt as LOST. We have not inferred which event caused the mismatch.
+
+- **LOST is legacy telemetry**, and includes timeouts that never proved a
+  competitor bought the listing. Those historical rows remain unchanged.
+- Future price-check/confirmation timeouts and ambiguous completions are
+  recorded as **UNCERTAIN**, not competitive losses.
+- Listings explicitly gone at the moment of verification are
+  **UNAVAILABLE**; unavailable does not prove who bought or cancelled them.
+- An unaffordable opportunity is **INELIGIBLE**, not a competitive miss.
+- If a confirmed AH-buy receipt exists for the same character/item within
+  90 seconds of an unsuccessful attempt, the desktop shows **CHECK RECEIPT**.
+  This is only a reconciliation hint, not an automatic rewrite of history.
+- The win rate uses only BOUGHT versus UNAVAILABLE + legacy LOST, and is
+  not a measure of total AH market capture. Timeout/uncertain events are
+  excluded from this rate.
+- The **verified vendor P&L is cumulative** from matched confirmed
+  AH buys and vendor sales, including pre-dashboard receipts. It is not
+  just the proceeds from the latest Sniper session. Unmatched receipts and
+  items pending manual review are excluded from that realised figure.
+- A data link marked Waiting when WoW is not visible or is outside the
+  AH/merchant is expected. SavedVariables sync after `/reload` is the
+  fallback.
+
 ## Sniper Performance dashboard (v0.4.0-live development build)
 
 The new **PERFORMANCE** tab audits the outcome of our below-vendor trading:
