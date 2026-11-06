@@ -23,7 +23,9 @@ local SKIP_SECONDS = 180
 local PREPARE_TIMEOUT = 25
 local SLOW_SECONDS = 3
 local TIMEOUT_SKIP_SECONDS = 30 -- a slow answer says nothing about the deal
-local DONE_SECONDS, LOST_SECONDS = 0.8, 1.2
+-- Release the item selection quickly after completion so the next browse
+-- can start sooner. Keep a visible confirmation, but don't hold it for 1.2s.
+local DONE_SECONDS, LOST_SECONDS = 0.55, 0.45
 local CHOOSE_EVERY = 0.1
 local MAX_RETRIES = 6
 local MAX_SELECT_TRIES = 3
@@ -309,6 +311,15 @@ end
 
 local function finish(phase, message)
     S.message = message
+    if phase == PHASE.LOST and S.deal
+        and string.find(string.lower(tostring(message)), 'sold before you could buy', 1, true) then
+        -- The old code immediately retried this exact stale auction in the
+        -- next browse. That produced 22 identical failures in 3 minutes.
+        -- Filter *unchanged* browse records before doing another live check,
+        -- and avoid reopening the same deal in the cursor confirmation UI.
+        local cooldown = NS.Aux.ReportUnavailable and NS.Aux.ReportUnavailable(S.deal)
+        if cooldown and cooldown > 0 then skip(S.deal, cooldown) end
+    end
     setPhase(phase)
 end
 
