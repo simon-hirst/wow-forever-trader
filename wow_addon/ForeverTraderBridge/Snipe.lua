@@ -125,7 +125,16 @@ local function setPhase(phase)
         elseif phase == PHASE.DONE then
             completeAttempt('BOUGHT')
         elseif phase == PHASE.LOST then
-            completeAttempt('LOST')
+            local detail = string.lower(tostring(S.message or ''))
+            if string.find(detail, 'sold before you could buy', 1, true) then
+                completeAttempt('UNAVAILABLE')
+            elseif string.find(detail, 'not enough free cash', 1, true) then
+                completeAttempt('INELIGIBLE')
+            else
+                -- Timeouts, failed selections and uncertain results are not
+                -- proven losses to another sniper.
+                completeAttempt('UNCERTAIN')
+            end
         end
         NS.Link.MarkState()
         if phase ~= PHASE.IDLE then
