@@ -430,7 +430,7 @@ class MarketStore:
         sniper_csv=io.StringIO();sp=csv.writer(sniper_csv)
         sp.writerow(['attempt_uid','timestamp_utc','character','item_id','item_name','outcome','quantity',
                      'cost_copper','estimated_profit_copper','early_page','page_to_ready_ms',
-                     'page_to_finish_ms','offer_to_ready_ms','offer_to_finish_ms','reason','source'])
+                     'page_to_finish_ms','offer_to_ready_ms','offer_to_finish_ms','reason','source','possible_purchase_receipt_near_attempt'])
         sp.writerows(self.recent_snipe_attempts(limit=100000))
         wallets_csv=io.StringIO();ww=csv.writer(wallets_csv)
         ww.writerow(['character','wallet_copper','last_saved_at_utc'])
