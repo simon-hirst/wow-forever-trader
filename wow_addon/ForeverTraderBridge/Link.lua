@@ -41,6 +41,7 @@ local urgentQueue, urgentHead, urgentTail = {}, 1, 0
 local framesSince, elapsedSince = 0, 0
 local stateDirty, nextState = true, 0
 Link.sent = 0
+Link.urgentSent = 0
 Link.droppedUrgent = 0
 
 local function queued()
@@ -159,6 +160,10 @@ function Link.QueueLength()
     return queued()
 end
 
+function Link.UrgentQueueLength()
+    return urgentTail - urgentHead + 1
+end
+
 function Link.MarkState()
     stateDirty = true
 end
@@ -207,6 +212,7 @@ function Link.Tick(elapsed)
         local entry = urgentQueue[urgentHead]
         urgentQueue[urgentHead] = nil
         urgentHead = urgentHead + 1
+        Link.urgentSent = Link.urgentSent + 1
         ftype, payload = entry[1], entry[2]
     elseif head <= tail then
         local entry = queue[head]

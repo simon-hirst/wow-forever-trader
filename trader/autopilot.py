@@ -49,6 +49,7 @@ class Autopilot(threading.Thread):
         self.context = context  # called on this thread: settings and wallet as a dict
         self.results: queue.Queue = queue.Queue()
         self.messages: queue.Queue = queue.Queue()
+        self.live_changes: queue.Queue = queue.Queue()
         self.assembler = link_protocol.SnapshotAssembler()
         self._stop_event = threading.Event()
         self._analyse_now = threading.Event()
@@ -115,13 +116,15 @@ class Autopilot(threading.Thread):
                 if message.startswith(performance.PREFIX):
                     try:
                         row=performance.parse_log_line(message)
-                        store.ingest_snipe_metrics({'snipe_metrics':[row]})
+                        if store.ingest_snipe_metrics({'snipe_metrics':[row]}):
+                            self.live_changes.put('attempt')
                     except (ValueError,TypeError,OverflowError) as exc:
                         self._log('invalid sniper telemetry: '+str(exc))
                 elif message.startswith('FTREC1|'):
                     try:
                         row=parse_live_receipt(message)
-                        store.ingest_activity({'activity':[row]})
+                        if store.ingest_activity({'activity':[row]})['new_events']:
+                            self.live_changes.put('receipt')
                     except (ValueError,TypeError,OverflowError) as exc:
                         self._log('invalid live trade receipt: '+str(exc))
                 else:

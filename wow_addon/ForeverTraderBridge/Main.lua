@@ -200,7 +200,9 @@ local function diagnostics()
         'last full listing: ' .. NS.Market.lastListingRows .. ' auctions this session, next request in ' ..
             math.ceil(NS.Market.NextListingIn() / 60) .. ' min',
         'link: ' .. (NS.Link.IsActive() and 'drawing' or 'off') .. ', frames sent ' .. NS.Link.sent ..
-            ', queued ' .. NS.Link.QueueLength(),
+            ', queued ' .. NS.Link.QueueLength() .. ', critical queued ' ..
+            NS.Link.UrgentQueueLength() .. ', critical sent ' .. NS.Link.urgentSent ..
+            ', critical dropped ' .. NS.Link.droppedUrgent,
         'plan: rev ' .. NS.Plan.rev .. ', limits ' .. tostring(NS.Plan.count or 0) .. ', slot ' .. NS.Plan.slot,
         'autoConfirm: ' .. tostring(NS.Settings().autoConfirm) .. ', bets ' .. tostring(NS.Settings().bets) .. ', reserve ' .. NS.Snipe.Coin(NS.Plan.reserve or NS.Settings().reserve),
         'confirm phase: ' .. tostring(NS.Snipe.state.phase),

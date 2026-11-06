@@ -231,6 +231,18 @@ class App(tk.Tk):
             while True:
                 try:self.status_var.set(self.autopilot.messages.get_nowait())
                 except queue.Empty:break
+            changed=False
+            while True:
+                try:
+                    self.autopilot.live_changes.get_nowait()
+                    changed=True
+                except queue.Empty:
+                    break
+            if changed:
+                self._update_performance()
+                self._update_activity()
+                self._update_ledger()
+                self._update_cards()
             self._update_link_status()
         except Exception as exc:
             self.status_var.set('Link error: '+str(exc))
