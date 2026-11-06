@@ -91,6 +91,28 @@ class TestPerformance(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_live_receipt('FTREC1|4|1793863080|Mage-PvP|AH_BUY|2589|2|20|review')
 
+    def test_uncertain_outcome_not_marked_as_competitive_loss(self):
+        self.store.ingest_snipe_metrics({'snipe_metrics':[
+            metric(1),metric(2,outcome='UNCERTAIN'),
+            metric(3,outcome='INELIGIBLE'),
+            metric(4,outcome='UNAVAILABLE')]})
+        stats=self.store.sniper_performance()
+        self.assertEqual(stats['bought'],1)
+        self.assertEqual(stats['uncertain'],1)
+        self.assertEqual(stats['ineligible'],1)
+        self.assertEqual(stats['missed'],1)
+        self.assertEqual(stats['capture_rate'],0.5)
+
+    def test_nearby_purchase_receipt_is_flagged_but_not_relabelled(self):
+        self.store.ingest_snipe_metrics({'snipe_metrics':[metric(1,outcome='LOST')]})
+        db=self.store.db
+        add_receipt(db,1,'Mage-PvP','AH_BUY',2589,1,10,T0+50)
+        db.commit()
+        row=self.store.recent_snipe_attempts(1)[0]
+        self.assertEqual(row[5],'LOST')
+        self.assertEqual(row[-1],1)
+        self.assertEqual(self.store.sniper_performance()['bought'],0)
+
     def test_matched_vendor_profit_tracks_character_and_exact_copper(self):
         db=self.store.db
         add_receipt(db,1,'Mage-PvP','AH_BUY',2589,3,101,T0)
