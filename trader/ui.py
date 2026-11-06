@@ -99,7 +99,7 @@ class App(tk.Tk):
         st.configure('TEntry',fieldbackground=PANEL2,foreground=FG,padding=7)
         st.configure('TCombobox',fieldbackground=PANEL2,foreground=FG,background=PANEL2)
         st.configure('TNotebook',background=BG,borderwidth=0)
-        st.configure('TNotebook.Tab',padding=(22,10),background=PANEL,foreground=MUTED,font=('Segoe UI Semibold',10))
+        st.configure('TNotebook.Tab',padding=(9,8),background=PANEL,foreground=MUTED,font=('Segoe UI Semibold',9))
         st.map('TNotebook.Tab',background=[('selected',PANEL2)],foreground=[('selected',FG)])
         st.configure('Treeview',background=PANEL,foreground=FG,fieldbackground=PANEL,rowheight=30,borderwidth=0,font=('Segoe UI',10))
         st.configure('Treeview.Heading',background=PANEL2,foreground=FG,borderwidth=0,relief='flat',font=('Segoe UI Semibold',10))
@@ -133,8 +133,8 @@ class App(tk.Tk):
         self.trades_tab=ttk.Frame(self.tabs);self.settings_tab=ttk.Frame(self.tabs)
         self.calc_tab=ttk.Frame(self.tabs)
         self.help_tab=ttk.Frame(self.tabs)
-        for frame,label in [(self.strategy_tab,'STRATEGY'),(self.performance_tab,'PERFORMANCE'),(self.market_tab,'MARKET'),(self.book_tab,'ORDER BOOK'),(self.vendor_tab,'VENDOR FLIPS'),(self.movers_tab,'MARKET MOVERS'),(self.signal_tab,'OPPORTUNITIES'),(self.watch_tab,'WATCHLIST'),
-                             (self.activity_tab,'AUTO ACTIVITY'),(self.trades_tab,'TRADE JOURNAL'),(self.calc_tab,'FLIP CALCULATOR'),(self.settings_tab,'SETTINGS'),(self.help_tab,'HOW IT WORKS')]:
+        for frame,label in [(self.strategy_tab,'STRATEGY'),(self.performance_tab,'PERFORMANCE'),(self.market_tab,'MARKET'),(self.book_tab,'ORDER BOOK'),(self.vendor_tab,'VENDOR'),(self.movers_tab,'MOVERS'),(self.signal_tab,'SIGNALS'),(self.watch_tab,'WATCHLIST'),
+                             (self.activity_tab,'ACTIVITY'),(self.trades_tab,'TRADES'),(self.calc_tab,'CALC'),(self.settings_tab,'SETTINGS'),(self.help_tab,'HELP')]:
             self.tabs.add(frame,text=label)
         self._strategy_tab();self._performance_tab();self._market_tab();self._book_tab();self._vendor_tab();self._movers_tab();self._signal_tab();self._watch_tab();self._trades_tab();self._activity_tab();self._calc_tab();self._settings_tab();self._help_tab()
         status=ttk.Frame(outer);status.pack(fill='x',pady=(12,0))
@@ -370,13 +370,14 @@ class App(tk.Tk):
         ttk.Label(header,text='SNIPER PERFORMANCE',style='Title.TLabel').pack(side='left')
         self.perf_note=tk.StringVar(value='Waiting for Sniper telemetry')
         ttk.Label(header,textvariable=self.perf_note,style='Hint.TLabel').pack(side='right')
-        ttk.Label(outer,text='Only confirmed, matched AH purchases and NPC sales count as realised vendor profit. '
-                  'Sniper margins are forecasts until sold; lost offers are not proof another player bought them.',
+        ttk.Label(outer,text='Cumulative matched AH-buy and NPC-sale receipts determine vendor profit. '
+                  'Sniper estimates do not count. CHECK RECEIPT marks a possible purchase '
+                  'near an otherwise unsuccessful attempt: inspect it rather than assuming a loss.',
                   style='Hint.TLabel',wraplength=1090).pack(anchor='w',pady=(0,12))
         metrics=ttk.Frame(outer);metrics.pack(fill='x',pady=(0,14))
         self.perf_vars={}
         labels=[('vendor','VERIFIED VENDOR P&L'),('rate','EST. GOLD / ACTIVE HOUR'),
-                ('attempts','SNIPER BOUGHT / LOST'),('capture','ATTEMPT WIN RATE'),
+                ('attempts','BOUGHT / MISSED'),('capture','KNOWN-OUTCOME WIN RATE'),
                 ('latency','MEDIAN PAGE → PURCHASE'),('review','RECEIPTS NEEDING REVIEW')]
         for key,label in labels:
             tile=ttk.Frame(metrics,style='Card.TFrame',padding=(10,10))
@@ -396,8 +397,9 @@ class App(tk.Tk):
         self.perf_tree.tag_configure('bought',foreground=GREEN)
         self.perf_tree.tag_configure('lost',foreground=RED)
         ttk.Label(outer,text='Recorded attempts are deduplicated between the live data link and SavedVariables. '
-                  'Vendor receipts may remain pending until /reload, after which confirmed P&L reconciles. '
-                  'The hourly rate uses observed active intervals, not a complete in-game clock.',
+                  'Timeouts and failed live checks are now UNCERTAIN, not competitive misses. Older LOST '
+                  'rows may also be ambiguous. Vendor receipts may need /reload. '
+                  'Hourly rates use observed attempts, not complete playing time.',
                   style='Hint.TLabel',wraplength=1080).pack(anchor='w',pady=(9,0))
 
     def _draw_performance_chart(self,rows):
@@ -436,25 +438,28 @@ class App(tk.Tk):
         rate=perf['profit_per_active_hour']
         self.perf_vars['vendor'].set(fmt_copper(vendor['realised']))
         self.perf_vars['rate'].set(fmt_copper(round(rate))+'/h' if rate is not None else '—')
-        self.perf_vars['attempts'].set(f"{perf['bought']} / {perf['lost']}")
+        self.perf_vars['attempts'].set(f"{perf['bought']} / {perf['missed']}")
         capture=perf['capture_rate']
         self.perf_vars['capture'].set(f'{capture:.0%}' if capture is not None else '—')
         latency=perf['median_page_to_buy_ms']
         self.perf_vars['latency'].set(f'{latency/1000:.2f}s' if latency is not None else '—')
         self.perf_vars['review'].set(str(self.store.review_count()))
-        self.perf_note.set(f"{perf['attempts']} tracked attempts · {perf['early_buys']} early-page buys · "
-                           f"{vendor['matched_qty']} matched NPC-sold units · "
-                           f"{vendor['unmatched_qty']} unmatched")
+        self.perf_note.set(
+            f"{perf['attempts']} attempts · {perf['uncertain']} uncertain · "
+            f"{perf['early_buys']} early buys · "
+            f"{vendor['matched_qty']} historical matched sale units · "
+            f"{vendor['unmatched_qty']} unmatched")
         rows=self.store.recent_snipe_attempts(limit=1000)
         self.perf_tree.delete(*self.perf_tree.get_children())
-        for uid,ts,char,item,name,outcome,qty,cost,estimate,early,page_ready,page_finish,offer_ready,offer_finish,reason,source in rows[:350]:
+        for uid,ts,char,item,name,outcome,qty,cost,estimate,early,page_ready,page_finish,offer_ready,offer_finish,reason,source,receipt_hint in rows[:350]:
             page=f'{page_finish/1000:.2f}s' if page_finish and early else '—'
             offer=f'{offer_finish/1000:.2f}s' if offer_finish else '—'
+            displayed='CHECK RECEIPT' if receipt_hint else outcome
             self.perf_tree.insert('',tk.END,iid=uid,
-                values=(time.strftime('%d %b %H:%M:%S',time.gmtime(ts)),name,outcome,
+                values=(time.strftime('%d %b %H:%M:%S',time.gmtime(ts)),name,displayed,
                         source.upper(),qty,fmt_copper(cost) if cost else '—',
                         fmt_copper(estimate) if estimate else '—',page,offer),
-                tags=('bought',) if outcome=='BOUGHT' else ('lost',) if outcome=='LOST' else ())
+                tags=('bought',) if outcome=='BOUGHT' else ('lost',) if outcome in ('LOST','UNAVAILABLE') else ())
         self._draw_performance_chart(rows)
 
     def _trades_tab(self):
