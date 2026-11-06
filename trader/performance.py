@@ -166,6 +166,56 @@ def confirmed_vendor_pnl(db, since=None):
                 open_units=sum(lot[0] for q in holdings.values() for lot in q))
 
 
+def vendor_sales(db, limit=200):
+    """Per-sale NPC receipts with FIFO matched cost and honest unknown-cost labels.
+
+    Rows contain (uid, ts, character, name, quantity, proceeds, matched_units,
+    realised_profit_or_none, status). This deliberately includes review-only
+    VENDOR_MONEY records so a cash movement isn't silently omitted.
+    """
+    rows = db.execute("""
+        SELECT e.uid,e.time,e.character,e.kind,e.item_id,e.qty,e.total,e.status,
+            COALESCE(n.name,i.name,'Item #'||e.item_id)
+        FROM automatic_events e
+        LEFT JOIN names n ON n.item_id=e.item_id
+        LEFT JOIN items i ON i.item_id=CAST(e.item_id AS INTEGER)
+        WHERE e.kind IN ('AH_BUY','VENDOR_SELL','VENDOR_MONEY')
+        ORDER BY e.time,CAST(e.uid AS INTEGER)
+    """).fetchall()
+    holdings=defaultdict(deque)
+    results=[]
+    for uid,ts,char,kind,item,qty,total,status,name in rows:
+        key=(char,str(item))
+        qty,total=int(qty),int(total)
+        if kind == 'AH_BUY':
+            if status == 'confirmed' and qty>0 and total>0:
+                holdings[key].append([qty,total])
+            continue
+        if kind == 'VENDOR_MONEY':
+            results.append((uid,ts,char,'Unattributed merchant cash',0,total,0,None,'REVIEW'))
+            continue
+        if status != 'confirmed' or qty<=0 or total<=0 or total%qty:
+            results.append((uid,ts,char,name,qty,total,0,None,'REVIEW'))
+            continue
+        remaining,matched,cost=qty,0,0
+        for lot in holdings[key]:
+            if remaining<=0: break
+            if lot[0]<=0: continue
+            take=min(remaining,lot[0])
+            allocated=lot[1] if take==lot[0] else (lot[1]*take)//lot[0]
+            lot[0]-=take
+            lot[1]-=allocated
+            cost+=allocated
+            remaining-=take
+            matched+=take
+        # Count only profit from matched units, not the whole sale
+        # when the initial purchase cost was never captured.
+        profit=(total//qty)*matched-cost if matched else None
+        label='MATCHED' if matched==qty else ('PARTIAL' if matched else 'NO BUY RECORD')
+        results.append((uid,ts,char,name,qty,total,matched,profit,label))
+    return list(reversed(results[-max(0,int(limit)):]))
+
+
 def _active_seconds(timestamps):
     """Approximate active time from attempts, ignoring overnight/offline gaps.
 
