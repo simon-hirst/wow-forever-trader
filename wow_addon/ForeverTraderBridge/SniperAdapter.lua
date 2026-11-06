@@ -35,6 +35,10 @@ local earlySessionDisabled = false
 -- Quarantine only confirmed disappearances, never throttling or timeouts.
 local goneCache = {}
 local GONE_DELAYS = {25, 60, 180}
+-- Multiple enchanted variants of one item can share the same dead cheapest
+-- browse price. Quarantine item+price, not just the specific item key.
+local itemGoneCache = {}
+local ITEM_GONE_DELAYS = {45, 120, 300}
 
 function Aux.DeadCacheOn()
     return NS.Settings().deadcache ~= false
@@ -44,6 +48,7 @@ function Aux.SetDeadCache(on)
     NS.Settings().deadcache = on == true
     if not on then
         wipe(goneCache)
+        wipe(itemGoneCache)
         if NS.Snipe and NS.Snipe.ClearGoneSkips then NS.Snipe.ClearGoneSkips() end
     end
     return Aux.DeadCacheOn()
@@ -56,55 +61,86 @@ Aux.stats.goneChanged = 0
 function Aux.IsGoneCooldown(key, price, qty)
     if not Aux.DeadCacheOn() then return false end
     key = tostring(key or '')
+    price = tonumber(price)
+    local now = GetTime()
+    local itemID = tonumber(string.match(key, '^(%d+)'))
+    if itemID and price and price > 0 then
+        local itemPriceKey = tostring(itemID) .. ':' .. tostring(price)
+        local group = itemGoneCache[itemPriceKey]
+        if group then
+            if now < group.untilTime then return true end
+            if now - group.reportedAt > 600 then itemGoneCache[itemPriceKey] = nil end
+        end
+    end
     local g = goneCache[key]
     if not g then return false end
-    local now = GetTime()
-    -- A changed minimum price or total quantity is a fresh opportunity.
-    if (price and tonumber(price) ~= g.price)
-        or (qty and g.qty and tonumber(qty) ~= g.qty) then
+    -- Changing totalQuantity can mean unrelated enchants were posted; it does
+    -- NOT prove the same cheapest bid is now a buyable auction.
+    if price and price ~= g.price then
         goneCache[key] = nil
         if Aux.env and Aux.env.known then Aux.env.known[key] = nil end
         Aux.stats.goneChanged = Aux.stats.goneChanged + 1
         return false
     end
     if now >= g.untilTime then
-        -- Keep the failure history for exponential backoff, but allow a
-        -- fresh check once. Without this flag, every browse would repeatedly
-        -- erase aux's known-price cache after the cooldown expires.
         if not g.released then
             g.released = true
             if Aux.env and Aux.env.known then Aux.env.known[key] = nil end
         end
-        if now - g.reportedAt > 300 then goneCache[key] = nil end
+        if now - g.reportedAt > 600 then goneCache[key] = nil end
         return false
     end
     return true
 end
 
 function Aux.ReportUnavailable(deal)
-    if not Aux.DeadCacheOn() or not deal or not deal.deal_key then return 0 end
-    local key = tostring(deal.deal_key)
-    local price = tonumber(deal.ft_browse_price or deal.unit_buyout_price)
+    if not Aux.DeadCacheOn() or not deal then return 0 end
+    local key = tostring(deal.deal_key or deal.item_id or '')
+    if key == '' then return 0 end
+    -- Gear uses buyout_price, whereas commodities use unit_buyout_price.
+    -- A missing per-page observation must not silently disable protection.
+    local price = tonumber(deal.ft_browse_price)
+    if not price or price <= 0 then
+        price = tonumber(deal.buyout_price or deal.unit_buyout_price)
+    end
     if not price or price <= 0 then return 0 end
-    local qty = tonumber(deal.ft_browse_qty)
-    local prev = goneCache[key]
     local now = GetTime()
-    local same = prev and prev.price == price
-        and (not prev.qty or not qty or prev.qty == qty)
-        and now - prev.reportedAt <= 300
+    local prev = goneCache[key]
+    local same = prev and prev.price == price and now - prev.reportedAt <= 600
     local strikes = same and math.min(prev.strikes + 1, #GONE_DELAYS) or 1
     local duration = GONE_DELAYS[strikes]
-    goneCache[key] = {price=price, qty=qty, untilTime=now+duration,
+    goneCache[key] = {price=price, untilTime=now+duration,
         reportedAt=now, strikes=strikes}
+
+    local itemID = tonumber(deal.item_id) or tonumber(string.match(key, '^(%d+)'))
+    if itemID then
+        local itemPriceKey = tostring(itemID) .. ':' .. tostring(price)
+        local previous = itemGoneCache[itemPriceKey]
+        local repeated = previous and now - previous.reportedAt <= 600
+        local itemStrikes = repeated and math.min(previous.strikes + 1, #ITEM_GONE_DELAYS) or 1
+        local itemDuration = ITEM_GONE_DELAYS[itemStrikes]
+        itemGoneCache[itemPriceKey] = {untilTime=now+itemDuration,
+            reportedAt=now, strikes=itemStrikes}
+        NS.Log('unavailable ' .. key .. ' at ' .. price ..
+            'c: key paused ' .. duration .. 's, item+price paused ' .. itemDuration .. 's')
+    else
+        NS.Log('unavailable ' .. key .. ' at ' .. price .. 'c: key paused ' .. duration .. 's')
+    end
     Aux.stats.goneReports = Aux.stats.goneReports + 1
-    NS.Log('unavailable ' .. key .. ' at ' .. price ..
-        'c: unchanged browse price paused ' .. duration .. 's')
     return duration
 end
 
 function Aux.GoneStats()
     local n, now = 0, GetTime()
     for _, g in pairs(goneCache) do
+        if now < g.untilTime then n = n + 1 end
+    end
+    return n
+end
+
+function Aux.ItemGoneStats()
+    local n, now = 0, GetTime()
+    for _, g in pairs(itemGoneCache) do
         if now < g.untilTime then n = n + 1 end
     end
     return n
@@ -244,12 +280,12 @@ end
 function Aux.PreviewStats()
     local s = Aux.stats
     local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module and Aux.module.account_data.sniper_profit) or 0)
-    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (early skips %d, full skips %d)',
+    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (item-prices %d, early skips %d, full skips %d)',
         Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '',
         Aux.DeadCacheOn() and 'on' or 'off', minProfit,
         s.earlyChecks, s.earlyRoundChecks, s.earlyDeals, s.earlyMisses,
         s.earlySpent, s.lastEarlyFirst, Aux.GoneStats(),
-        s.goneFilteredEarly, s.goneFilteredFull)
+        Aux.ItemGoneStats(), s.goneFilteredEarly, s.goneFilteredFull)
 end
 
 

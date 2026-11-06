@@ -65,24 +65,36 @@ class SniperSpeedAndPriority(unittest.TestCase):
                 minPrice=price, totalQuantity=quantity)
         return rows
 
-    def test_gone_cooldown_backs_off_but_price_or_quantity_reopens_immediately(self):
+    def test_gone_cooldown_backs_off_without_reopening_on_quantity_churn(self):
         deal = self.sim.lua.table(deal_key='8178:0', unit_buyout_price=100,
                                   ft_browse_price=100, ft_browse_qty=1)
         self.assertEqual(self.aux.ReportUnavailable(deal), 25)
-        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
-        self.assertFalse(self.aux.IsGoneCooldown('8178:0',99,1))
-        self.assertEqual(self.aux.ReportUnavailable(deal), 25)  # changed price reset
-        self.sim.run(26)
-        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0', 100, 1))
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0', 100, 1200))
+        self.sim.run(46)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0', 100, 1))
         self.assertEqual(self.aux.ReportUnavailable(deal), 60)
-        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
-        self.sim.run(61)
-        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0', 100, 1))
+        self.sim.run(121)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0', 100, 1))
         self.assertEqual(self.aux.ReportUnavailable(deal), 180)
-        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
-        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,2))
-        self.assertEqual(self.aux.ReportUnavailable(deal), 25)  # changed quantity resets
-        self.assertFalse(self.aux.IsGoneCooldown('8178:0',90,1))
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0', 100, 2))
+        self.assertEqual(self.aux.ReportUnavailable(deal), 180)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0', 90, 1))
+
+    def test_unavailable_gear_quarantines_other_enchantments_at_same_price(self):
+        # Real export: 100+ failed 1s Training Sword attempts across enchants.
+        # Gear lacks unit_buyout_price, so use buyout_price if page data is absent.
+        deal = self.sim.lua.table(
+            deal_key='8178:10:14306:0', item_id=8178, buyout_price=100)
+        self.assertEqual(self.aux.ReportUnavailable(deal), 25)
+        self.assertTrue(self.aux.IsGoneCooldown('8178:10:14321:0', 100, 2000))
+        self.assertTrue(self.aux.IsGoneCooldown('8178:10:14306:0', 100, 1999))
+        self.assertFalse(self.aux.IsGoneCooldown('8178:10:14321:0', 99, 2000))
+        self.assertFalse(self.aux.IsGoneCooldown('2073:0', 100, 2000))
+        self.assertEqual(self.aux.ItemGoneStats(), 1)
+        self.sim.run(46)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:10:14321:0', 100, 2000))
 
     def test_deadcache_kill_switch_immediately_reenables_stale_candidates(self):
         deal=self.sim.lua.table(deal_key='8178:0',unit_buyout_price=100,

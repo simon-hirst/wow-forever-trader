@@ -244,7 +244,12 @@ local function chooseDeal()
     local betsOn = NS.Settings().bets
     for _, deal in ipairs(env.deals or {}) do
         if not deal.deal_gone and not deal.deal_bought and (skipped[dealKey(deal)] or 0) <= now
-            and (betsOn or deal.deal_reason == 'vendor') then
+            and (betsOn or deal.deal_reason == 'vendor')
+            -- Even if the current Sniper list retains a dead listing, do not
+            -- re-offer it at the cursor until its live verification cools off.
+            and not NS.Aux.IsGoneCooldown(deal.deal_key,
+                deal.ft_browse_price or deal.buyout_price or deal.unit_buyout_price,
+                deal.ft_browse_qty) then
             local n, _, profit = sizeNow(deal)
             if n > 0 and (not best or profit > score) then
                 best, score = deal, profit
