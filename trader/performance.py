@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 PREFIX = "FTPM1|"
-OUTCOMES = {"BOUGHT", "LOST", "EXPIRED", "SKIPPED", "CANCELLED"}
+OUTCOMES = {"BOUGHT", "LOST", "UNAVAILABLE", "UNCERTAIN", "INELIGIBLE", "EXPIRED", "SKIPPED", "CANCELLED"}
 REASONS = {"vendor", "usual", "plan", "unknown"}
 SOURCES = {"early", "full", "unknown"}
 FIELDS = (
@@ -105,7 +105,14 @@ def attempts(db, limit=300):
                COALESCE(n.name, i.name, 'Item #'||a.item_id),
                a.outcome,a.qty,a.cost,a.estimated_profit,a.early,
                a.page_ready_ms,a.page_finish_ms,a.offer_ready_ms,
-               a.offer_finish_ms,a.reason,a.source
+               a.offer_finish_ms,a.reason,a.source,
+               CASE WHEN a.outcome IN ('LOST','UNAVAILABLE','UNCERTAIN')
+                 AND EXISTS (SELECT 1 FROM automatic_events e
+                   WHERE e.status='confirmed' AND e.kind='AH_BUY'
+                     AND e.character=a.character
+                     AND e.item_id=CAST(a.item_id AS TEXT)
+                     AND ABS(e.time-a.ts)<=90)
+               THEN 1 ELSE 0 END AS possible_receipt
         FROM snipe_attempts a
         LEFT JOIN names n ON n.item_id=CAST(a.item_id AS TEXT)
         LEFT JOIN items i ON i.item_id=a.item_id
@@ -178,7 +185,9 @@ def summary(db, now=None):
     counts = {k: 0 for k in OUTCOMES}
     for _, outcome, _, _, _ in rows:
         counts[outcome] += 1
-    offered = counts["BOUGHT"] + counts["LOST"]
+    # Legacy LOST remains ambiguous; new timeouts never count as a win-rate miss.
+    misses = counts["LOST"] + counts["UNAVAILABLE"]
+    offered = counts["BOUGHT"] + misses
     page_ms = [r[3] for r in rows if r[1] == "BOUGHT" and r[2] and r[3] > 0]
     pnl = confirmed_vendor_pnl(db)
     active = _active_seconds([r[0] for r in rows])
@@ -187,6 +196,8 @@ def summary(db, now=None):
     recent_pnl = confirmed_vendor_pnl(db, since=rows[0][0]) if rows else None
     hourly = (recent_pnl["realised"] * 3600 / active) if active >= 600 and recent_pnl else None
     return dict(attempts=len(rows), bought=counts["BOUGHT"], lost=counts["LOST"],
+                unavailable=counts["UNAVAILABLE"], missed=misses,
+                uncertain=counts["UNCERTAIN"], ineligible=counts["INELIGIBLE"],
                 expired=counts["EXPIRED"], skipped=counts["SKIPPED"],
                 cancelled=counts["CANCELLED"],
                 capture_rate=(counts["BOUGHT"] / offered) if offered else None,
