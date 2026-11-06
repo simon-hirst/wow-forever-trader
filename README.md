@@ -75,6 +75,35 @@ server serialisation or cached browse API differs, the feature might disable
 itself or interrupt a round. Record the `/ft pagestats` output and the first
 couple of browse/Confirm events to assess actual latency.
 
+## Live NPC sales and individual profit receipts (development)
+
+The first real performance export contained **374 confirmed NPC sale receipts** but
+the PERFORMANCE tab only listed Sniper *attempts*. This was a UI omission;
+vendor receipts were already available under AUTO ACTIVITY and in the database.
+
+PERFORMANCE now includes an **NPC VENDOR SALES** table displaying receipt time,
+item, number sold, exact vendor proceeds, matched purchase units, realised profit
+for matched units and status. A sale without a documented AH buy shows
+**NO BUY RECORD**, and ambiguous evidence shows **REVIEW**, with unknown profit
+rather than invented cost or profit. Partially matched sales show **PARTIAL**.
+
+The live-link vendor sale delay was caused or exacerbated by receipt events
+sharing a FIFO queue with potentially thousands of full-market snapshot frames.
+Confirmed `FTREC1` sales and `FTPM1` Sniper outcomes now use a high-priority
+queue. The link still requires WoW's top-of-screen data strip to be visible.
+When a confirmed sale is imported, the desktop signals the dashboard to
+refresh immediately rather than waiting for the normal four-second poll.
+`/ft diag` reports critical receipt queue depth, delivered and dropped counts.
+
+If WoW is minimised, its top strip is obscured, the live link has gaps, or
+the server provides incomplete merchant evidence, **SavedVariables may still
+need /reload/logout**. Do not claim an unconfirmed vendor sale is verified.
+All old receipt IDs remain stable; re-import never creates duplicate sales.
+
+The complete export now includes `npc_vendor_sales.csv`, in addition to
+`automatic_activity.csv` and `sniper_attempts.csv`. No new trading actions
+or accelerated AH queries were added to the proven incremental Sniper.
+
 ## Sniper outcomes: data-quality correction (development)
 
 The first live dashboard revealed a useful cross-check: auxForever had
