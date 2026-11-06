@@ -75,6 +75,46 @@ server serialisation or cached browse API differs, the feature might disable
 itself or interrupt a round. Record the `/ft pagestats` output and the first
 couple of browse/Confirm events to assess actual latency.
 
+## Competitive vendor Sniper: dead-lead backoff (experimental)
+
+The 6 November 22:22 UTC export showed **22 consecutive failed Training Sword
+confirmations** at the same 1s 00c apparent buyout (+2s 06c estimated vendor
+margin), approximately one every 9–10 seconds. This cannot be interpreted
+as 22 distinct auctions beaten by other players. The cursor was repeatedly
+offered a stale or otherwise unbuyable listing.
+
+The Sniper adapter now:
+- Records a **confirmed disappearance** after a selected live-price check
+  reports *Sold before you could buy it*.
+- Quarantines only that **unchanged item-key, price and (when known) browse
+  quantity** for 25 seconds, then 60 seconds, then up to 180 seconds after
+  repeated disappearances. A changed minimum price or quantity immediately
+  releases the quarantine. A timeout or throttle delay never triggers it.
+- Excludes quarantined candidates **before** both incremental-page and
+  full-browse live verification requests, preventing one fake high-profit
+  listing from monopolising the Sniper. The Market recorder still receives
+  the complete browse rows.
+- Releases the post-BUY/LOST button state sooner (0.55s / 0.45s).
+- Uses **Normal** as the default scan speed for new installs; the real Fast
+  test had a slower browse from server contention (25s versus 16–18s).
+
+Use `/ft pagestats` to inspect the counts labelled **dead**, **early skips**
+and **full skips**. The new feature is enabled by default. If it hides a
+genuine recently reposted bargain, run **`/ft deadcache off`** to remove
+the quarantine and associated cursor skips immediately; `/ft deadcache on`
+re-enables it. The early scan itself remains controlled by `/ft pages on|off`.
+
+**Tradeoff:** An auction reposted at exactly the same price and aggregate
+quantity while its original record is quarantined may not be detected until
+the cooldown expires. The auction house's browse response does not expose
+a distinct auction ID for that minimum, so there is no reliable way to
+recognise such a repost without a separate item search. This feature avoids
+repeated searches proven to be dead; it cannot bypass the realm's throttle,
+guarantee a win against a faster player or remove normal server latency.
+
+This is only shipped on the `v0.4.0-live` branch until its real-client
+behavior has been measured. The stable auto-updater does not receive it.
+
 ## Live NPC sales and individual profit receipts (development)
 
 The first real performance export contained **374 confirmed NPC sale receipts** but
