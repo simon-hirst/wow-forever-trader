@@ -34,7 +34,13 @@ local HELD_SECONDS = 24 * 60 * 60 -- a plan's unit cap counts what was bought th
 
 local S = {phase = PHASE.IDLE, retries = 0}
 local skipped = {}
+local goneSkips = {}
 local nextChoose = 0
+
+function Snipe.ClearGoneSkips()
+    for key in pairs(goneSkips) do skipped[key] = nil end
+    wipe(goneSkips)
+end
 local button, titleText, reasonText, detailText
 
 Snipe.state = S
@@ -321,7 +327,10 @@ local function finish(phase, message)
         -- Filter *unchanged* browse records before doing another live check,
         -- and avoid reopening the same deal in the cursor confirmation UI.
         local cooldown = NS.Aux.ReportUnavailable and NS.Aux.ReportUnavailable(S.deal)
-        if cooldown and cooldown > 0 then skip(S.deal, cooldown) end
+        if cooldown and cooldown > 0 then
+            skip(S.deal, cooldown)
+            goneSkips[dealKey(S.deal)] = true
+        end
     end
     setPhase(phase)
 end
