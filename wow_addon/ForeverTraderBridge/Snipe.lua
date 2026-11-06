@@ -146,7 +146,10 @@ local function setPhase(phase)
 end
 
 local function dealKey(deal)
-    return tostring(deal.deal_key) .. ':' .. tostring(ceil(deal.unit_buyout_price or 0))
+    -- Skip only this auction/fingerprint, not a newly posted unit with a new
+    -- auction ID or changed browse quantity at the same per-unit price.
+    return tostring(deal.deal_key) .. ':' .. tostring(ceil(deal.unit_buyout_price or 0)) ..
+        ':' .. tostring(deal.ft_browse_qty or '') .. ':' .. tostring(deal.auction_id or '')
 end
 
 -- Units bought on a bet, per item, so the plan's unit cap holds across purchases and
