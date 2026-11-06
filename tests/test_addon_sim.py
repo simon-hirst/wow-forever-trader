@@ -431,12 +431,13 @@ class LinkReceiptPriority(unittest.TestCase):
         self.link.Open()
 
     def test_sale_receipt_jumps_ahead_of_market_snapshot_backlog(self):
+        prior=self.link.QueueLength()
         for index in range(30):
             self.assertTrue(self.link.Enqueue(self.link.TYPE.L3, 'market chunk '+str(index)))
         self.assertTrue(self.link.Enqueue(self.link.TYPE.LOG,
             'FTREC1|1|1793863080|Mage-PvP|VENDOR_SELL|2589|2|26|confirmed'))
         self.assertEqual(self.link.UrgentQueueLength(),1)
-        self.assertEqual(self.link.QueueLength(),31)
+        self.assertEqual(self.link.QueueLength(),prior+31)
         for _ in range(4):self.link.Tick(0.2)
         self.assertEqual(self.link.urgentSent,1)
         self.assertEqual(self.link.UrgentQueueLength(),0)
