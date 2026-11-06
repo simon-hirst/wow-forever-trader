@@ -35,12 +35,26 @@ local earlySessionDisabled = false
 -- Quarantine only confirmed disappearances, never throttling or timeouts.
 local goneCache = {}
 local GONE_DELAYS = {25, 60, 180}
+
+function Aux.DeadCacheOn()
+    return NS.Settings().deadcache ~= false
+end
+
+function Aux.SetDeadCache(on)
+    NS.Settings().deadcache = on == true
+    if not on then
+        wipe(goneCache)
+        if NS.Snipe and NS.Snipe.ClearGoneSkips then NS.Snipe.ClearGoneSkips() end
+    end
+    return Aux.DeadCacheOn()
+end
 Aux.stats.goneReports = 0
 Aux.stats.goneFilteredEarly = 0
 Aux.stats.goneFilteredFull = 0
 Aux.stats.goneChanged = 0
 
 function Aux.IsGoneCooldown(key, price, qty)
+    if not Aux.DeadCacheOn() then return false end
     key = tostring(key or '')
     local g = goneCache[key]
     if not g then return false end
@@ -68,7 +82,7 @@ function Aux.IsGoneCooldown(key, price, qty)
 end
 
 function Aux.ReportUnavailable(deal)
-    if not deal or not deal.deal_key then return 0 end
+    if not Aux.DeadCacheOn() or not deal or not deal.deal_key then return 0 end
     local key = tostring(deal.deal_key)
     local price = tonumber(deal.ft_browse_price or deal.unit_buyout_price)
     if not price or price <= 0 then return 0 end
@@ -230,8 +244,9 @@ end
 function Aux.PreviewStats()
     local s = Aux.stats
     local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module and Aux.module.account_data.sniper_profit) or 0)
-    return string.format('pages %s%s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (early skips %d, full skips %d)',
-        Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '', minProfit,
+    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (early skips %d, full skips %d)',
+        Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '',
+        Aux.DeadCacheOn() and 'on' or 'off', minProfit,
         s.earlyChecks, s.earlyRoundChecks, s.earlyDeals, s.earlyMisses,
         s.earlySpent, s.lastEarlyFirst, Aux.GoneStats(),
         s.goneFilteredEarly, s.goneFilteredFull)
