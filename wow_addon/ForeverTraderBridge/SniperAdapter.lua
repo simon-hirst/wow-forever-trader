@@ -57,6 +57,33 @@ Aux.stats.goneReports = 0
 Aux.stats.goneFilteredEarly = 0
 Aux.stats.goneFilteredFull = 0
 Aux.stats.goneChanged = 0
+Aux.stats.browseFailures = 0
+Aux.stats.safetyStops = 0
+Aux.stats.lastBrowseFailureAt = nil
+local safetyStopScheduled = false
+
+-- The realm may keep accepting new scan rounds even when its AH has stopped
+-- answering. Never spin another full browse automatically after a 20-second
+-- request timeout. The player can manually restart the Sniper when it recovers.
+function Aux.StopOnBrowseFailure(env, reason)
+    if not env or not rawget(env, 'active') or not rawget(env, 'running')
+        or safetyStopScheduled then return end
+    safetyStopScheduled = true
+    Aux.stats.browseFailures = Aux.stats.browseFailures + 1
+    Aux.stats.lastBrowseFailureAt = GetTime()
+    NS.Log('auction-house browse failed (' .. tostring(reason) .. '): stopping Sniper to avoid repeat timeouts')
+    -- Defer: stopping inside the scan's coroutine kills the coroutine at its
+    -- next yield. Let the original request unwind first.
+    C_Timer.After(0, function()
+        safetyStopScheduled = false
+        if Aux.env == env and rawget(env, 'running') and type(env.stop) == 'function' then
+            env.stop()
+            Aux.stats.safetyStops = Aux.stats.safetyStops + 1
+            print('|cff66ccffForever Trader|r Auction house did not answer. Sniper stopped automatically; restart it manually after the server recovers.')
+            NS.Log('sniper safety stop complete')
+        end
+    end)
+end
 
 function Aux.IsGoneCooldown(key, price, qty)
     if not Aux.DeadCacheOn() then return false end
@@ -136,6 +163,13 @@ function Aux.GoneStats()
         if now < g.untilTime then n = n + 1 end
     end
     return n
+end
+
+function Aux.FaultStats()
+    return string.format('browse failures %d, safety stops %d, last failure %s',
+        Aux.stats.browseFailures, Aux.stats.safetyStops,
+        Aux.stats.lastBrowseFailureAt and
+            string.format('%.1fs ago', math.max(0, GetTime() - Aux.stats.lastBrowseFailureAt)) or 'never')
 end
 
 function Aux.ItemGoneStats()
@@ -435,18 +469,20 @@ local function installHooks(env)
     if type(originalRequest) == 'function' then
         scanEnvironment.request = function(send, events, match, cached)
             local answer = originalRequest(send, events, match, cached)
-            if not earlyInProgress and type(events) == 'table' then
+            if type(events) == 'table' then
                 for _, event in ipairs(events) do
                     if event == 'AUCTION_HOUSE_BROWSE_RESULTS_UPDATED' or
                         event == 'AUCTION_HOUSE_BROWSE_RESULTS_ADDED' then
                         if not answer or answer == 'AUCTION_HOUSE_BROWSE_FAILURE' then
-                            if Aux.PagesOn() and Aux.stats.earlyRoundChecks > 0 and env.active then
+                            -- This path also runs with /ft pages off: the
+                            -- underlying aux Sniper still scans indefinitely.
+                            Aux.StopOnBrowseFailure(env, answer or 'no answer')
+                            if not earlyInProgress and Aux.PagesOn()
+                                and Aux.stats.earlyRoundChecks > 0 and env.active then
                                 earlySessionDisabled = true
                                 NS.Log('browse pagination failed after early search: reverting to legacy')
-                                Aux.scan.abort()
-                                Aux.module.coro_wait()
                             end
-                        elseif answer then
+                        elseif not earlyInProgress then
                             Aux.PreviewBrowsePage()
                         end
                         break

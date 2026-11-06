@@ -389,6 +389,7 @@ C_AuctionHouse = {
         __ah.browseQuery = query
         __ah.browsePageIndex = 0
         __ah_log[#__ah_log + 1] = 'browse'
+        if __ah.dropBrowseAnswers then return end
         later(__ah.browseLatency or __ah.latency, function()
             __ah.browsePageIndex = 1
             __fire('AUCTION_HOUSE_BROWSE_RESULTS_UPDATED')
@@ -400,6 +401,7 @@ C_AuctionHouse = {
     end,
     RequestMoreBrowseResults = function()
         __ah_log[#__ah_log + 1] = 'browse_more'
+        if __ah.dropBrowseAnswers then return end
         later(__ah.browseLatency or __ah.latency, function()
             __ah.browsePageIndex = (__ah.browsePageIndex or 0) + 1
             __fire('AUCTION_HOUSE_BROWSE_RESULTS_ADDED')

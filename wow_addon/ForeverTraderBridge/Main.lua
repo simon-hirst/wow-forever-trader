@@ -208,6 +208,7 @@ local function diagnostics()
         'autoConfirm: ' .. tostring(NS.Settings().autoConfirm) .. ', bets ' .. tostring(NS.Settings().bets) .. ', reserve ' .. NS.Snipe.Coin(NS.Plan.reserve or NS.Settings().reserve),
         'confirm phase: ' .. tostring(NS.Snipe.state.phase),
         'sniper scan: ' .. NS.Aux.StatsLine(),
+        'auction-house reliability: ' .. NS.Aux.FaultStats(),
         -- GetBindingByKey does not report override click bindings in this client, so show our own flag.
         'relay key ' .. RELAY_KEY .. ': ' .. (relayBound and 'bound to Confirm' or 'not bound'),
         'unknown events:' .. (NS.unknownEvents or ' none'),
@@ -229,6 +230,8 @@ SlashCmdList.FOREVERTRADER = function(input)
         say(NS.Aux.StatsLine())
     elseif command == 'pagestats' then
         say(NS.Aux.PreviewStats())
+    elseif command == 'faultstats' then
+        say(NS.Aux.FaultStats())
     elseif command == 'pages' then
         if rest == 'on' or rest == 'off' then
             NS.Aux.SetPages(rest == 'on')
@@ -288,6 +291,6 @@ SlashCmdList.FOREVERTRADER = function(input)
     elseif command == 'log' then
         for _, line in ipairs((ForeverTraderBridgeDB and ForeverTraderBridgeDB.log) or {}) do print(line) end
     else
-        say('/ft diag | scanstats | pagestats | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
+        say('/ft diag | scanstats | pagestats | faultstats | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
     end
 end

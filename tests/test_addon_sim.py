@@ -561,6 +561,32 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertGreater(rows[0].page_ready_ms,0)
         self.assertGreater(rows[0].page_finish_ms,rows[0].page_ready_ms)
 
+
+    def test_unanswered_browse_stops_sniper_with_pages_disabled(self):
+        # Regression for WOW51900319 session: experimental pages were off,
+        # but aux started new whole-AH scans after every 20s timeout.
+        self.ns.Settings().pages = False
+        self.sim.g['__ah'].dropBrowseAnswers = True
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops >= 1, timeout=30))
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertEqual(self.ns.Aux.stats.browseFailures, 1)
+        self.assertIn('safety stops 1', self.ns.Aux.FaultStats())
+        first_browses = self.sim.ah_log().count('browse')
+        self.assertEqual(first_browses, 1)
+        self.sim.run(12)
+        self.assertEqual(self.sim.ah_log().count('browse'), first_browses)
+
+    def test_successful_browse_never_trips_safety_stop(self):
+        self.ns.Settings().pages = False
+        self.sim.set_commodity(LINEN, [(10, 5)])
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.browses > 0, timeout=10))
+        self.assertEqual(self.ns.Aux.stats.safetyStops, 0)
+        self.assertTrue(self.ns.Aux.IsRunning())
+
     def test_unavailable_listing_is_recorded_as_unavailable_without_buying(self):
         self.sim.set_commodity(LINEN, [(10, 5)])
         self.start()
