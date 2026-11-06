@@ -385,7 +385,7 @@ class App(tk.Tk):
             ttk.Label(tile,text=label,style='CardName.TLabel').pack(anchor='w')
             v=tk.StringVar(value='—');self.perf_vars[key]=v
             ttk.Label(tile,textvariable=v,style='CardValue.TLabel').pack(anchor='w',pady=(4,0))
-        ttk.Label(outer,text='RECENT SNIPER ACTIVITY  ·  green = bought  ·  red = lost',
+        ttk.Label(outer,text='RECENT SNIPER ACTIVITY  ·  green = bought  ·  red = unavailable / legacy lost',
                   style='Hint.TLabel').pack(anchor='w',pady=(0,5))
         self.perf_chart=tk.Canvas(outer,height=102,bg=PANEL,highlightthickness=0)
         self.perf_chart.pack(fill='x',pady=(0,12))
@@ -413,7 +413,7 @@ class App(tk.Tk):
         buckets=[[0,0] for _ in range(12)]
         for uid,ts,char,item,name,outcome,*_ in rows:
             i=(ts-start)//300
-            if 0<=i<12 and outcome in ('BOUGHT','LOST'):
+            if 0<=i<12 and outcome in ('BOUGHT','LOST','UNAVAILABLE'):
                 buckets[i][0 if outcome=='BOUGHT' else 1]+=1
         peak=max([1]+[a+b for a,b in buckets])
         cell=(right-left)/12
