@@ -47,11 +47,21 @@ function Aux.IsGoneCooldown(key, price, qty)
     local now = GetTime()
     -- A changed minimum price or total quantity is a fresh opportunity.
     if (price and tonumber(price) ~= g.price)
-        or (qty and g.qty and tonumber(qty) ~= g.qty)
-        or now >= g.untilTime then
+        or (qty and g.qty and tonumber(qty) ~= g.qty) then
         goneCache[key] = nil
         if Aux.env and Aux.env.known then Aux.env.known[key] = nil end
         Aux.stats.goneChanged = Aux.stats.goneChanged + 1
+        return false
+    end
+    if now >= g.untilTime then
+        -- Keep the failure history for exponential backoff, but allow a
+        -- fresh check once. Without this flag, every browse would repeatedly
+        -- erase aux's known-price cache after the cooldown expires.
+        if not g.released then
+            g.released = true
+            if Aux.env and Aux.env.known then Aux.env.known[key] = nil end
+        end
+        if now - g.reportedAt > 300 then goneCache[key] = nil end
         return false
     end
     return true
