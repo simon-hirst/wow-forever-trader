@@ -65,6 +65,33 @@ class SniperSpeedAndPriority(unittest.TestCase):
                 minPrice=price, totalQuantity=quantity)
         return rows
 
+    def test_gone_cooldown_backs_off_but_price_or_quantity_reopens_immediately(self):
+        deal = self.sim.lua.table(deal_key='8178:0', unit_buyout_price=100,
+                                  ft_browse_price=100, ft_browse_qty=1)
+        self.assertEqual(self.aux.ReportUnavailable(deal), 25)
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0',99,1))
+        self.assertEqual(self.aux.ReportUnavailable(deal), 25)  # changed price reset
+        self.sim.run(26)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertEqual(self.aux.ReportUnavailable(deal), 60)
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.sim.run(61)
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertEqual(self.aux.ReportUnavailable(deal), 180)
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0',100,1))
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0',100,2))
+        self.assertEqual(self.aux.ReportUnavailable(deal), 25)  # changed quantity resets
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0',90,1))
+
+    def test_gone_cooldown_is_scoped_to_item_key_not_every_other_item(self):
+        deal=self.sim.lua.table(deal_key='8178:0',unit_buyout_price=100,
+                                ft_browse_price=100,ft_browse_qty=1)
+        self.aux.ReportUnavailable(deal)
+        self.assertFalse(self.aux.IsGoneCooldown('5071:0',100,1))
+        self.assertEqual(self.aux.GoneStats(),1)
+        self.assertGreaterEqual(self.aux.stats.goneReports,1)
+
     def test_vendor_savings_receive_priority_without_modifying_browse_results(self):
         rows = self._rows([
             (CLOAK, 30, 8), (LINEN, 10, 6),
@@ -520,6 +547,7 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual(rows[0].outcome,'UNAVAILABLE')
         self.assertEqual(self.sim.bought(), [])
+        self.assertGreaterEqual(self.ns.Aux.stats.goneReports,1)
 
     def test_browse_is_counted_even_when_quick_buy_interrupts_the_round(self):
         self.sim.set_commodity(LINEN, [(10, 5)])
@@ -640,6 +668,26 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(self.ns.Market.rounds, 0)
         self.assertEqual(self.sim.bought(), [])
         self.assertIn('fallback', self.ns.Aux.PreviewStats())
+
+    def test_unchanged_dead_lead_is_not_researched_every_new_browse(self):
+        self._set_paged_market()
+        self.start()
+        self.sim.run(0.75) # adapter attached, first page has not yet arrived
+        key=self.ns.Aux.scan.item_key_string(self.sim.lua.table(itemID=HATCHET))
+        dead=self.sim.lua.table(deal_key=key,unit_buyout_price=500,
+                                ft_browse_price=500,ft_browse_qty=1)
+        self.assertEqual(self.ns.Aux.ReportUnavailable(dead),25)
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Market.rounds>=1, timeout=15))
+        self.assertEqual(self.ns.Aux.stats.earlyChecks,0)
+        self.assertGreaterEqual(self.ns.Aux.stats.goneFilteredEarly,1)
+        self.assertGreaterEqual(self.ns.Aux.stats.goneFilteredFull,1)
+        self.assertNotIn('search:'+str(HATCHET),self.sim.ah_log())
+        self.assertEqual(self.sim.bought(), [])
+        self.assertFalse(self.sim.phase_is('READY'))
+        # The ordinary market bar still includes this row despite the filtered
+        # Sniper queue. Suppression is scoped to purchase selection, not data.
+        self.assertEqual(self.ns.Aux.stats.rows,3)
 
     def test_disabling_incremental_pages_waits_for_entire_browse(self):
         self._set_paged_market()
