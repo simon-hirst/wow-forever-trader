@@ -396,6 +396,15 @@ class App(tk.Tk):
              'cost':90,'est':98,'page':115,'offer':120})
         self.perf_tree.tag_configure('bought',foreground=GREEN)
         self.perf_tree.tag_configure('lost',foreground=RED)
+        ttk.Label(outer,text='NPC VENDOR SALES  ·  green profit = matched purchase receipt  ·  ? = cost unknown',
+                  style='Hint.TLabel').pack(anchor='w',pady=(13,5))
+        sale_cols={'time':'UTC','item':'ITEM','qty':'SOLD','proceeds':'VENDOR PAID',
+                   'matched':'MATCHED UNITS','profit':'VERIFIED PROFIT','status':'ACCOUNTING'}
+        self.perf_sales_tree=self._make_tree(outer,sale_cols,
+            {'time':132,'item':240,'qty':62,'proceeds':105,'matched':110,
+             'profit':115,'status':125})
+        self.perf_sales_tree.tag_configure('matched',foreground=GREEN)
+        self.perf_sales_tree.tag_configure('review',foreground=ORANGE)
         ttk.Label(outer,text='Recorded attempts are deduplicated between the live data link and SavedVariables. '
                   'Timeouts and failed live checks are now UNCERTAIN, not competitive misses. Older LOST '
                   'rows may also be ambiguous. Vendor receipts may need /reload. '
@@ -461,6 +470,16 @@ class App(tk.Tk):
                         fmt_copper(estimate) if estimate else '—',page,offer),
                 tags=('bought',) if outcome=='BOUGHT' else ('lost',) if outcome in ('LOST','UNAVAILABLE') else ())
         self._draw_performance_chart(rows)
+        self.perf_sales_tree.delete(*self.perf_sales_tree.get_children())
+        for uid,ts,char,name,qty,total,matched,profit,status in self.store.recent_vendor_sales(limit=200):
+            self.perf_sales_tree.insert('',tk.END,iid=str(uid),
+                values=(time.strftime('%d %b %H:%M:%S',time.gmtime(ts)),
+                        name,qty,fmt_copper(total) if total else '—',
+                        matched if status not in ('REVIEW','NO BUY RECORD') else '—',
+                        fmt_copper(profit) if profit is not None else '?',
+                        status),
+                tags=('matched',) if status=='MATCHED' else
+                     ('review',) if status in ('REVIEW','NO BUY RECORD') else ())
 
     def _trades_tab(self):
         banner=ttk.Frame(self.trades_tab,padding=(0,15,0,10));banner.pack(fill='x')

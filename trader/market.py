@@ -329,6 +329,9 @@ class MarketStore:
     def sniper_performance(self):
         return performance.summary(self.db)
 
+    def recent_vendor_sales(self,limit=200):
+        return performance.vendor_sales(self.db, limit)
+
     def recent_snipe_attempts(self,limit=300):
         return performance.attempts(self.db,limit)
 
@@ -432,6 +435,10 @@ class MarketStore:
                      'cost_copper','estimated_profit_copper','early_page','page_to_ready_ms',
                      'page_to_finish_ms','offer_to_ready_ms','offer_to_finish_ms','reason','source','possible_purchase_receipt_near_attempt'])
         sp.writerows(self.recent_snipe_attempts(limit=100000))
+        vendor_sales_csv=io.StringIO();vs=csv.writer(vendor_sales_csv)
+        vs.writerow(['receipt_uid','time_utc','character','item','quantity',
+                    'proceeds_copper','matched_purchase_units','matched_profit_copper','status'])
+        vs.writerows(self.recent_vendor_sales(limit=100000))
         wallets_csv=io.StringIO();ww=csv.writer(wallets_csv)
         ww.writerow(['character','wallet_copper','last_saved_at_utc'])
         ww.writerows(self.db.execute('SELECT character,copper,seen_at FROM wallets ORDER BY seen_at DESC'))
@@ -465,6 +472,7 @@ class MarketStore:
             z.writestr('wallet_changes.csv',changes_csv.getvalue())
             z.writestr('automatic_activity.csv',automatic.getvalue())
             z.writestr('sniper_attempts.csv',sniper_csv.getvalue())
+            z.writestr('npc_vendor_sales.csv',vendor_sales_csv.getvalue())
             z.writestr('wallet_checkpoints.csv',wallets_csv.getvalue())
             z.writestr('order_books.csv',orderbooks.getvalue())
             z.writestr('market_movers.csv',movers.getvalue())
