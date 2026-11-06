@@ -29,6 +29,63 @@ local earlySeen = {}         -- this round: item key -> last browse minPrice
 local earlyRecent = {}       -- across rounds: item key -> price/quantity/time
 local earlyInProgress = false
 local earlySessionDisabled = false
+-- The live export contained 22 failed Training Sword attempts at the same
+-- price in about three minutes. A known-dead browse fingerprint should not
+-- monopolise the highest-priority item query on every fresh browse.
+-- Quarantine only confirmed disappearances, never throttling or timeouts.
+local goneCache = {}
+local GONE_DELAYS = {25, 60, 180}
+Aux.stats.goneReports = 0
+Aux.stats.goneFilteredEarly = 0
+Aux.stats.goneFilteredFull = 0
+Aux.stats.goneChanged = 0
+
+function Aux.IsGoneCooldown(key, price, qty)
+    key = tostring(key or '')
+    local g = goneCache[key]
+    if not g then return false end
+    local now = GetTime()
+    -- A changed minimum price or total quantity is a fresh opportunity.
+    if (price and tonumber(price) ~= g.price)
+        or (qty and g.qty and tonumber(qty) ~= g.qty)
+        or now >= g.untilTime then
+        goneCache[key] = nil
+        if Aux.env and Aux.env.known then Aux.env.known[key] = nil end
+        Aux.stats.goneChanged = Aux.stats.goneChanged + 1
+        return false
+    end
+    return true
+end
+
+function Aux.ReportUnavailable(deal)
+    if not deal or not deal.deal_key then return 0 end
+    local key = tostring(deal.deal_key)
+    local price = tonumber(deal.ft_browse_price or deal.unit_buyout_price)
+    if not price or price <= 0 then return 0 end
+    local qty = tonumber(deal.ft_browse_qty)
+    local prev = goneCache[key]
+    local now = GetTime()
+    local same = prev and prev.price == price
+        and (not prev.qty or not qty or prev.qty == qty)
+        and now - prev.reportedAt <= 300
+    local strikes = same and math.min(prev.strikes + 1, #GONE_DELAYS) or 1
+    local duration = GONE_DELAYS[strikes]
+    goneCache[key] = {price=price, qty=qty, untilTime=now+duration,
+        reportedAt=now, strikes=strikes}
+    Aux.stats.goneReports = Aux.stats.goneReports + 1
+    NS.Log('unavailable ' .. key .. ' at ' .. price ..
+        'c: unchanged browse price paused ' .. duration .. 's')
+    return duration
+end
+
+function Aux.GoneStats()
+    local n, now = 0, GetTime()
+    for _, g in pairs(goneCache) do
+        if now < g.untilTime then n = n + 1 end
+    end
+    return n
+end
+
 
 Aux.stats.earlyChecks = 0
 Aux.stats.earlyDeals = 0
@@ -58,6 +115,10 @@ local function earlyPotential(row, now)
     if budget <= 0 or price > budget then return end
     local id = key.itemID
     local keyStr = Aux.scan.item_key_string(key)
+    if Aux.IsGoneCooldown(keyStr, price, qty) then
+        Aux.stats.goneFilteredEarly = Aux.stats.goneFilteredEarly + 1
+        return
+    end
     if earlySeen[keyStr] == price then return end
     local prev = earlyRecent[keyStr]
     if prev and prev.price == price and prev.qty == qty
@@ -134,6 +195,8 @@ function Aux.PreviewBrowsePage()
             newDeal.ft_first_page_at = firstPageAt or now
             newDeal.ft_verified_at = GetTime()
             newDeal.ft_incremental = true
+            newDeal.ft_browse_price = c.price
+            newDeal.ft_browse_qty = c.qty
             Aux.stats.earlyDeals = Aux.stats.earlyDeals + 1
             NS.Log('early page bargain: ' .. tostring(c.keyStr) ..
                 ' +at least ' .. tostring(c.profit) .. 'c per unit')
@@ -157,10 +220,11 @@ end
 function Aux.PreviewStats()
     local s = Aux.stats
     local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module and Aux.module.account_data.sniper_profit) or 0)
-    return string.format('pages %s%s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, last first check %.1fs',
+    return string.format('pages %s%s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (early skips %d, full skips %d)',
         Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '', minProfit,
         s.earlyChecks, s.earlyRoundChecks, s.earlyDeals, s.earlyMisses,
-        s.earlySpent, s.lastEarlyFirst)
+        s.earlySpent, s.lastEarlyFirst, Aux.GoneStats(),
+        s.goneFilteredEarly, s.goneFilteredFull)
 end
 
 
@@ -376,7 +440,19 @@ local function installHooks(env)
         stats.verify = 0
         local ok, err = pcall(NS.Market.OnBrowse, results)
         if not ok then NS.Log('market error: ' .. tostring(err)) end
-        local ranked, count = Aux.RankVendorCandidates(results, env.known,
+        -- Market.OnBrowse receives every row; only Sniper's candidate set
+        -- is filtered. This prevents repeated unbuyable candidates from
+        -- spending live AH item-search requests and blocking better bargains.
+        local eligible = {}
+        for _, row in ipairs(results) do
+            local key = row.itemKey and Aux.scan.item_key_string(row.itemKey)
+            if key and Aux.IsGoneCooldown(key, row.minPrice, row.totalQuantity) then
+                stats.goneFilteredFull = stats.goneFilteredFull + 1
+            else
+                eligible[#eligible + 1] = row
+            end
+        end
+        local ranked, count = Aux.RankVendorCandidates(eligible, env.known,
             Aux.scan.item_key_string, GetMoney() - (NS.Settings().reserve or 0))
         stats.priorities = count
         -- Yielding scan: it can be interrupted intentionally by a purchase.
