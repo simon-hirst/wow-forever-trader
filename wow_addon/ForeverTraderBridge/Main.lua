@@ -8,6 +8,7 @@ local DEFAULTS = {
     autoConfirm = true, -- confirm the server's price by itself after a real press
     bets = true,        -- offer resale bets from the plan, not only below-vendor deals
     reserve = 500,      -- copper never spent
+    stopAtSilver = 30,  -- keep the last 30s, stop Sniper when <=30s remains
     spec = 0.25,        -- share of free cash for one bet that is not below vendor price
     speed = 'normal',   -- 2.5s; live Fast scans were slower due to AH throttling
     pages = true,       -- experimental: examine high-value vendor deals between browse pages
@@ -38,6 +39,30 @@ end
 
 function NS.Now()
     return GetServerTime and GetServerTime() or time()
+end
+
+-- A hard bankroll floor is independent of the plan reserve and the desktop
+-- phone-alert threshold. Never allow a plan sync to lower this protection.
+-- /ft stopat off makes the hard floor zero, restoring existing reserve rules.
+function NS.StopFloorCopper()
+    local silver = tonumber(NS.Settings().stopAtSilver) or 0
+    return math.max(0, math.floor(silver)) * 100
+end
+
+function NS.EffectiveReserve()
+    local base = (NS.Plan and NS.Plan.reserve) or NS.Settings().reserve or 0
+    return math.max(tonumber(base) or 0, NS.StopFloorCopper())
+end
+
+function NS.WalletFloorReached()
+    local floor = NS.StopFloorCopper()
+    return floor > 0 and GetMoney() <= floor
+end
+
+function NS.EnforceWalletFloor()
+    if NS.WalletFloorReached() and NS.Aux and NS.Aux.StopForWalletFloor then
+        NS.Aux.StopForWalletFloor()
+    end
 end
 
 function NS.Log(text)
@@ -175,6 +200,7 @@ events:SetScript('OnEvent', function(_, event, ...)
     elseif event == 'PLAYER_MONEY' then
         -- Wallet change only: update the existing coloured strip. No AH request.
         NS.Link.MarkState()
+        NS.EnforceWalletFloor()
     elseif event == 'AUCTION_HOUSE_SHOW' then
         onAuctionHouseShow()
     elseif event == 'AUCTION_HOUSE_CLOSED' then
@@ -190,6 +216,7 @@ local ticker = CreateFrame('Frame')
 ticker:SetScript('OnUpdate', function(_, elapsed)
     NS.Market.Tick()
     NS.Plan.Tick()
+    NS.EnforceWalletFloor()
     NS.Snipe.Tick()
     NS.Link.Tick(elapsed)
 end)
@@ -210,7 +237,9 @@ local function diagnostics()
             NS.Link.UrgentQueueLength() .. ', critical sent ' .. NS.Link.urgentSent ..
             ', critical dropped ' .. NS.Link.droppedUrgent,
         'plan: rev ' .. NS.Plan.rev .. ', limits ' .. tostring(NS.Plan.count or 0) .. ', slot ' .. NS.Plan.slot,
-        'autoConfirm: ' .. tostring(NS.Settings().autoConfirm) .. ', bets ' .. tostring(NS.Settings().bets) .. ', reserve ' .. NS.Snipe.Coin(NS.Plan.reserve or NS.Settings().reserve),
+        'autoConfirm: ' .. tostring(NS.Settings().autoConfirm) .. ', bets ' .. tostring(NS.Settings().bets) .. ', reserve ' .. NS.Snipe.Coin(NS.EffectiveReserve()),
+        'sniper wallet floor: ' .. NS.Snipe.Coin(NS.StopFloorCopper()) ..
+            ', reached ' .. tostring(NS.WalletFloorReached()) .. ', stopped ' .. tostring(NS.Aux.walletFloorStopped),
         'confirm phase: ' .. tostring(NS.Snipe.state.phase),
         'sniper scan: ' .. NS.Aux.StatsLine(),
         'auction-house reliability: ' .. NS.Aux.FaultStats(),
@@ -254,6 +283,26 @@ SlashCmdList.FOREVERTRADER = function(input)
         else
             say('usage: /ft deadcache on|off')
         end
+    elseif command == 'stopat' then
+        if rest == '' then
+            say('sniping wallet floor: ' ..
+                (NS.StopFloorCopper() > 0 and NS.Snipe.Coin(NS.StopFloorCopper()) or 'off') ..
+                '; reserve ' .. NS.Snipe.Coin(NS.EffectiveReserve()) ..
+                ', sniper running ' .. tostring(NS.Aux.IsRunning()))
+        elseif rest == 'off' then
+            settings.stopAtSilver = 0
+            say('sniping wallet floor off; configured reserve still applies')
+        else
+            local silver = tonumber(rest)
+            if silver and silver == math.floor(silver) and silver >= 1 and silver <= 1000000 then
+                settings.stopAtSilver = silver
+                say('sniping stops at or below ' .. NS.Snipe.Coin(NS.StopFloorCopper()) ..
+                    '; purchases cannot reduce wallet below this amount')
+                NS.EnforceWalletFloor()
+            else
+                say('usage: /ft stopat <silver> (e.g. /ft stopat 30) | off')
+            end
+        end
     elseif command == 'walletstream' then
         if rest == 'on' or rest == 'off' then
             settings.walletStream = rest == 'on'
@@ -279,6 +328,12 @@ SlashCmdList.FOREVERTRADER = function(input)
         say(key .. ': ' .. (settings[key] and 'on' or 'off'))
         if key == 'link' then
             if settings.link and (NS.AuctionHouseOpen or settings.walletStream) then NS.Link.Open() elseif not settings.link then NS.Link.Stop() end
+        elseif key == 'auto' and settings.auto and NS.Aux then
+            -- Explicit manual /ft auto on is the only automatic-start latch
+            -- reset after the wallet floor was reached. Cash increases do not
+            -- silently restart Sniper scanning.
+            NS.Aux.walletFloorStopped = false
+            if NS.AuctionHouseOpen then NS.Aux.StartSession() end
         end
     elseif command == 'reserve' then
         local copper = tonumber(rest)
@@ -308,6 +363,6 @@ SlashCmdList.FOREVERTRADER = function(input)
     elseif command == 'log' then
         for _, line in ipairs((ForeverTraderBridgeDB and ForeverTraderBridgeDB.log) or {}) do print(line) end
     else
-        say('/ft diag | scanstats | pagestats | faultstats | walletstream on|off | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
+        say('/ft diag | scanstats | pagestats | faultstats | walletstream on|off | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | stopat <silver>|off | linktest | relaytest | testplan <id> <limit> <units> | log')
     end
 end

@@ -616,6 +616,65 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertGreater(rows[0].page_finish_ms,rows[0].page_ready_ms)
 
 
+    def test_default_wallet_floor_stops_scanning_at_30s(self):
+        # 3,100c cash; only 100c may be spent. 10 x Linen at 10c
+        # leaves exactly 3,000c, triggering an immediate stop.
+        self.sim.g['__money'] = 3100
+        self.sim.set_commodity(LINEN, [(10, 40)])
+        self.start()
+        self.wait_ready()
+        self.assertEqual(self.ns.StopFloorCopper(), 3000)
+        self.assertEqual(self.ns.Snipe.state.n, 10)
+        self.sim.press()
+        self.assertTrue(self.sim.run_until(lambda: self.sim.bought(), timeout=5))
+        self.assertEqual(self.sim.bought()[0]['n'], 10)
+        self.assertEqual(self.sim.money(), 3000)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertTrue(self.ns.Aux.walletFloorStopped)
+        self.assertEqual(self.ns.Aux.stats.walletFloorStops, 1)
+        self.sim.run(15)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertNotEqual(self.ns.Snipe.state.phase, self.ns.Snipe.PHASE.READY)
+
+    def test_wallet_at_floor_never_starts_an_auction_scan(self):
+        self.sim.g['__money'] = 3000
+        self.sim.set_commodity(LINEN, [(10, 40)])
+        self.start()
+        self.sim.run(2)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertEqual(self.sim.ah_log().count('browse'), 0)
+        self.assertEqual(self.sim.bought(), [])
+        self.assertEqual(self.ns.Aux.stats.walletFloorStops, 1)
+
+    def test_stopat_command_changes_floor_and_requires_manual_restart(self):
+        self.sim.g['__money'] = 3500
+        self.sim.set_commodity(LINEN, [(10, 40)])
+        self.start()
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.sim.g.SlashCmdList.FOREVERTRADER('stopat 40')
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertEqual(self.ns.StopFloorCopper(), 4000)
+        self.assertEqual(self.ns.Aux.stats.walletFloorStops, 1)
+        self.sim.g['__money'] = 4500
+        self.sim.g['__fire']('PLAYER_MONEY')
+        self.sim.run(2)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.sim.g.SlashCmdList.FOREVERTRADER('auto on')
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.sim.g.SlashCmdList.FOREVERTRADER('stopat off')
+        self.assertEqual(self.ns.StopFloorCopper(), 0)
+
+    def test_effective_reserve_never_goes_below_the_wallet_floor(self):
+        self.assertEqual(self.ns.EffectiveReserve(), 3000)
+        self.ns.Plan.reserve = 5000
+        self.assertEqual(self.ns.EffectiveReserve(), 5000)
+        self.ns.Plan.reserve = 500
+        self.assertEqual(self.ns.EffectiveReserve(), 3000)
+        self.sim.g.SlashCmdList.FOREVERTRADER('stopat 100')
+        self.assertEqual(self.ns.EffectiveReserve(), 10000)
+        self.sim.g.SlashCmdList.FOREVERTRADER('stopat 0')
+        self.assertEqual(self.ns.StopFloorCopper(), 10000)
+
     def test_unanswered_browse_stops_sniper_with_pages_disabled(self):
         # Regression for WOW51900319 session: experimental pages were off,
         # but aux started new whole-AH scans after every 20s timeout.

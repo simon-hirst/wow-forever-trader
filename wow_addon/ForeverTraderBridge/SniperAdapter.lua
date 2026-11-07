@@ -14,7 +14,8 @@ local SNIPER_TAB_FALLBACK = 2
 -- round. Shorter pauses only remove idle time; they cannot bypass the AH's
 -- throttled-message gate. Keep a fallback if the realm starts dropping requests.
 local SPEED_PAUSE = {fast = 0.35, normal = 2.5, safe = 6}
-Aux.stats = {rounds = 0, browses = 0, started = 0, rows = 0, priorities = 0, pages = 0, firstPage = 0, browse = 0, verify = 0}
+Aux.stats = {rounds = 0, browses = 0, started = 0, rows = 0, priorities = 0, pages = 0, firstPage = 0, browse = 0, verify = 0, walletFloorStops = 0}
+Aux.walletFloorStopped = false
 local pagesThisRound, firstPageAt = 0, nil
 
 -- OPT-IN incremental browse interception. The browse cache is cumulative.
@@ -285,7 +286,7 @@ local function earlyPotential(row, now)
     if not key or type(key.itemID) ~= 'number' then return end
     local price, qty = row.minPrice or 0, row.totalQuantity or 0
     if price <= 0 or qty <= 0 then return end
-    local budget = GetMoney() - (NS.Plan.reserve or NS.Settings().reserve or 0)
+    local budget = GetMoney() - NS.EffectiveReserve()
     if budget <= 0 or price > budget then return end
     local id = key.itemID
     local keyStr = Aux.scan.item_key_string(key)
@@ -682,7 +683,7 @@ local function installHooks(env)
             end
         end
         local ranked, count = Aux.RankVendorCandidates(eligible, env.known,
-            Aux.scan.item_key_string, GetMoney() - (NS.Settings().reserve or 0))
+            Aux.scan.item_key_string, GetMoney() - NS.EffectiveReserve())
         stats.priorities = count
         -- Yielding scan: it can be interrupted intentionally by a purchase.
         -- stats.browses remains accurate even if control never returns here.
@@ -709,7 +710,7 @@ local function installHooks(env)
         local reason, profit, pct = judge(price, usual, vendor, days, percent, minProfit)
         if not NS.Settings().bets then
             if reason ~= 'vendor' then return nil end
-            local free = GetMoney() - (NS.Plan.reserve or NS.Settings().reserve or 0)
+            local free = GetMoney() - NS.EffectiveReserve()
             if not price or price > free then return nil end
             return reason, profit, pct
         end
@@ -757,12 +758,32 @@ function Aux.IsTabShown()
 end
 
 -- Opens the Sniper tab and presses Start, as the player would.
+function Aux.StopForWalletFloor()
+    if not NS.WalletFloorReached() then return false end
+    if not Aux.walletFloorStopped then
+        Aux.walletFloorStopped = true
+        Aux.stats.walletFloorStops = Aux.stats.walletFloorStops + 1
+        local message = 'wallet has reached ' .. NS.Snipe.Coin(NS.StopFloorCopper()) ..
+            ' floor: Sniper stopped. Type /ft auto on to restart after topping up.'
+        NS.Log(message)
+        print('|cff66ccffForever Trader|r ' .. message)
+    end
+    if Aux.IsRunning() and type(Aux.env.stop) == 'function' then Aux.env.stop() end
+    NS.Link.MarkState()
+    return true
+end
+
 function Aux.StartSession()
     if not Aux.Attach() then
         NS.Log('auxForever Sniper not found; scanning needs it')
         return
     end
     if not NS.Settings().auto then return end
+    if NS.WalletFloorReached() then
+        Aux.StopForWalletFloor()
+        return
+    end
+    if Aux.walletFloorStopped then return end
     if not Aux.IsTabShown() then Aux.module.set_tab(Aux.tabIndex) end
     if not Aux.IsRunning() then Aux.env.start() end
     NS.Link.MarkState()

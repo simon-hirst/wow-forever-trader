@@ -244,7 +244,7 @@ end
 
 local function sizeNow(deal)
     local settings = NS.Settings()
-    local reserve = NS.Plan.reserve or settings.reserve
+    local reserve = NS.EffectiveReserve()
     local spec = NS.Plan.spec or settings.spec
     return Snipe.Size(deal, GetMoney(), reserve, spec, NS.Plan.For(deal.item_id), Snipe.Held(deal.item_id))
 end
@@ -509,6 +509,14 @@ local function tickConfirming()
         retry('The price moved')
         return
     end
+    -- Another purchase or external spend may have reduced the wallet since
+    -- the offer was prepared. Never submit a commodity confirmation that
+    -- could cross the protected bankroll floor.
+    if GetMoney() - (S.quote or S.cost or 0) < NS.StopFloorCopper() then
+        bar.other_input.escape(bar.other_input)
+        finish(PHASE.LOST, 'Not enough free cash')
+        return
+    end
     if NS.Settings().autoConfirm then confirmNow() end
 end
 
@@ -615,6 +623,18 @@ function Snipe.Tick()
         return
     end
     local phase = S.phase
+    if NS.WalletFloorReached() or not aux.IsRunning() then
+        -- A request already sent to the AH can still settle: continue to
+        -- observe the result. PREPARE/READY are cancellable and cannot buy.
+        if phase ~= PHASE.QUOTING and phase ~= PHASE.CONFIRMING and phase ~= PHASE.BUYING then
+            if phase ~= PHASE.IDLE then
+                letGo()
+                finishIdle()
+            end
+            hideButton()
+            return
+        end
+    end
     if phase == PHASE.IDLE then
         if GetTime() >= nextChoose and not aux.buyBar.busy() and not aux.env.refreshing then
             nextChoose = GetTime() + CHOOSE_EVERY
@@ -659,6 +679,7 @@ function Snipe.Press(source)
         NS.Log('press (' .. tostring(source or '?') .. ') in ' .. tostring(PHASE_NAMES[phase]))
     end
     if phase == PHASE.READY then
+        if NS.WalletFloorReached() or not NS.Aux.IsRunning() then return end
         if GetTime() < (S.armedAt or 0) then return end
         if S.perf and not S.perf.pressAt then S.perf.pressAt = GetTime() end
         -- The wallet can change between the offer and the press.
@@ -676,6 +697,10 @@ function Snipe.Press(source)
         end
         NS.Aux.buyBar.primary_click()
     elseif phase == PHASE.CONFIRMING and not NS.Settings().autoConfirm then
+        if NS.WalletFloorReached() or GetMoney() - (S.quote or S.cost or 0) < NS.StopFloorCopper() then
+            finish(PHASE.LOST, 'Not enough free cash')
+            return
+        end
         confirmNow()
     end
 end

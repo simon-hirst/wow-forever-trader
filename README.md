@@ -2,6 +2,23 @@
 
 A Windows desktop app and a WoW addon. Open the auction house and it scans the market by itself, works out what things are worth and how fast they really sell, and turns that into a set of limit orders. When something lists at or under a limit, or below what an NPC vendor pays, a **Confirm** button appears at your cursor. One press buys it.
 
+## Hard Sniper wallet floor (development branch)
+
+The default **30 silver** safety floor is independent of the configurable phone
+alert threshold. The Sniper never offers purchases that would take the wallet
+below 30s, even if a later desktop plan has a smaller reserve. At or below 30s
+it stops auxForever's repeated scans, clears the unsubmitted Confirm offer and
+stays stopped if NPC sales later increase the wallet. It never cancels an
+already-submitted AH purchase; other WoW UI purchases are not controlled.
+
+- `/ft stopat 30` sets a **30 silver** floor (default; input is silver).
+- `/ft stopat` shows the floor, effective reserve and Sniper status.
+- `/ft stopat off` disables the floor but leaves the regular reserve intact.
+- After topping up, manually use `/ft auto on` to rearm and start if the
+  auction house is already open, or press auxForever's Start button.
+
+No new AH traffic or background polling is used to enforce the floor.
+
 ## Sniper speed tuning (development branch)
 
 **Current focus: below-vendor arbitrage.** auxForever's Sniper requests a paginated
