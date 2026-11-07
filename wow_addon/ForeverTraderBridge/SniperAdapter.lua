@@ -30,6 +30,7 @@ local EARLY_SLOW_SECONDS = 8
 local earlySeen = {}         -- this round: item key -> last browse minPrice
 local earlyRecent = {}       -- across rounds: item key -> price/result/time
 local earlyInProgress = false
+local earlyCachedOnly = false
 local earlySessionDisabled = false
 -- The live export contained 22 failed Training Sword attempts at the same
 -- price in about three minutes. A known-dead browse fingerprint should not
@@ -195,6 +196,7 @@ Aux.stats.earlyRepeatSkips = 0
 Aux.stats.earlySlowFallbacks = 0
 Aux.stats.earlySlowSeconds = 0
 Aux.stats.earlyVerifiedNoDeal = 0
+Aux.stats.earlyCachedFallbacks = 0
 Aux.stats.cachePruned = 0
 
 -- The browse quantity covers *all* auctions for an item, including other
@@ -340,6 +342,7 @@ function Aux.PreviewBrowsePage()
             if deal.deal_key == c.keyStr then beforeDeal = deal; break end
         end
         local t0 = GetTime()
+        earlyCachedOnly = false
         -- MUST NOT call through pcall: scan.read_item yields on Lua 5.1.
         Aux.env.check_item(c.row.itemKey, c.keyStr, c.price)
         local spent = math.max(0, GetTime() - t0)
@@ -358,7 +361,18 @@ function Aux.PreviewBrowsePage()
         for _, deal in ipairs(Aux.env.deals) do
             if deal.deal_key == c.keyStr then newDeal = deal; break end
         end
-        if newDeal and newDeal ~= beforeDeal and not newDeal.deal_gone
+        if earlyCachedOnly then
+            -- aux's 1-second fallback returns 'true' for local cached results,
+            -- *not* a server event. On a slow AH this is often the stale 1s
+            -- bid that produced a flood of UNAVAILABLE cursor offers.
+            -- Don't promote such a result as a fresh early bargain.
+            Aux.stats.earlyCachedFallbacks = Aux.stats.earlyCachedFallbacks + 1
+            earlySessionDisabled = true
+            if newDeal and newDeal ~= beforeDeal then newDeal.deal_gone = true end
+            if Aux.env.known then Aux.env.known[c.keyStr] = nil end
+            NS.Log('early page suspended: item query used cached-only data instead of a fresh server event')
+        end
+        if not earlyCachedOnly and newDeal and newDeal ~= beforeDeal and not newDeal.deal_gone
             and not newDeal.deal_bought then
             -- Attach monotonic timing evidence directly to the deal picked up
             -- by Snipe.lua. Never infer these timings from the wall-clock
@@ -376,7 +390,7 @@ function Aux.PreviewBrowsePage()
             Aux.stats.earlyMisses = Aux.stats.earlyMisses + 1
             -- aux marks the price as known ONLY when its item search answered.
             -- Do not apply a long negative cache to timeouts or dropped queries.
-            if Aux.env.known and Aux.env.known[c.keyStr] == c.price then
+            if not earlyCachedOnly and Aux.env.known and Aux.env.known[c.keyStr] == c.price then
                 Aux.NoteEarlyCheck(c.keyStr, c.price, true, GetTime())
                 Aux.stats.earlyVerifiedNoDeal = Aux.stats.earlyVerifiedNoDeal + 1
             end
@@ -398,13 +412,14 @@ end
 function Aux.PreviewStats()
     local s = Aux.stats
     local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module and Aux.module.account_data.sniper_profit) or 0)
-    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (item-prices %d, early skips %d, full skips %d), repeat skips %d, verified no-deal %d, slow fallbacks %d (%.1fs)',
+    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (item-prices %d, early skips %d, full skips %d), repeat skips %d, verified no-deal %d, slow fallbacks %d (%.1fs), cached-only fallbacks %d',
         Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '',
         Aux.DeadCacheOn() and 'on' or 'off', minProfit,
         s.earlyChecks, s.earlyRoundChecks, s.earlyDeals, s.earlyMisses,
         s.earlySpent, s.lastEarlyFirst, Aux.GoneStats(),
         Aux.ItemGoneStats(), s.goneFilteredEarly, s.goneFilteredFull,
-        s.earlyRepeatSkips, s.earlyVerifiedNoDeal, s.earlySlowFallbacks, s.earlySlowSeconds)
+        s.earlyRepeatSkips, s.earlyVerifiedNoDeal, s.earlySlowFallbacks, s.earlySlowSeconds,
+        s.earlyCachedFallbacks)
 end
 
 
@@ -555,6 +570,17 @@ local function installHooks(env)
         scanEnvironment.request = function(send, events, match, cached)
             local answer = originalRequest(send, events, match, cached)
             if type(events) == 'table' then
+                if earlyInProgress and answer == true then
+                    for _, event in ipairs(events) do
+                        if event == 'ITEM_SEARCH_RESULTS_UPDATED' or
+                            event == 'ITEM_SEARCH_RESULTS_ADDED' or
+                            event == 'COMMODITY_SEARCH_RESULTS_UPDATED' or
+                            event == 'COMMODITY_SEARCH_RESULTS_ADDED' then
+                            earlyCachedOnly = true
+                            break
+                        end
+                    end
+                end
                 for _, event in ipairs(events) do
                     if event == 'AUCTION_HOUSE_BROWSE_RESULTS_UPDATED' or
                         event == 'AUCTION_HOUSE_BROWSE_RESULTS_ADDED' then

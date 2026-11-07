@@ -733,9 +733,23 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(self.sim.bought()[0]['id'], HATCHET)
         self.assertEqual(self.sim.violations(), [])
 
+    def test_cached_only_early_results_are_not_offered_as_fresh_deals(self):
+        self._set_paged_market()
+        self.sim.g['__ah'].latency = 9.0
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.earlyCachedFallbacks >= 1, timeout=12))
+        self.assertFalse(self.ns.Aux.PagesOn())
+        self.assertIn('cached-only fallbacks 1', self.ns.Aux.PreviewStats())
+        self.assertFalse(self.sim.phase_is('READY'))
+        self.assertEqual(self.sim.bought(), [])
+
     def test_one_slow_early_verification_falls_back_to_normal_browse(self):
         self._set_paged_market()
         self.sim.g['__ah'].latency = 9.0
+        # Force a real 9s event: aux's cached() can otherwise answer from
+        # the old client cache after 1 second even while the server is slow.
+        self.sim.lua.execute('C_AuctionHouse.HasSearchResults = function() return false end')
         self.start()
         self.assertTrue(self.sim.run_until(
             lambda: self.ns.Aux.stats.earlySlowFallbacks >= 1, timeout=20))
