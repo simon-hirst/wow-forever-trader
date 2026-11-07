@@ -60,7 +60,10 @@ function NS.WalletFloorReached()
 end
 
 function NS.EnforceWalletFloor()
-    if NS.WalletFloorReached() and NS.Aux and NS.Aux.StopForWalletFloor then
+    -- No need to latch/log while just standing at an NPC. StartSession will
+    -- apply the floor before Sniper starts if the AH opens with low money.
+    if NS.WalletFloorReached() and (NS.AuctionHouseOpen or
+        (NS.Aux and NS.Aux.IsRunning())) and NS.Aux and NS.Aux.StopForWalletFloor then
         NS.Aux.StopForWalletFloor()
     end
 end

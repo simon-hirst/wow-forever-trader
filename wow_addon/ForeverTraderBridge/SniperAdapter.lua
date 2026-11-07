@@ -760,7 +760,8 @@ end
 -- Opens the Sniper tab and presses Start, as the player would.
 function Aux.StopForWalletFloor()
     if not NS.WalletFloorReached() then return false end
-    if not Aux.walletFloorStopped then
+    local newlyStopped = not Aux.walletFloorStopped
+    if newlyStopped then
         Aux.walletFloorStopped = true
         Aux.stats.walletFloorStops = Aux.stats.walletFloorStops + 1
         local message = 'wallet has reached ' .. NS.Snipe.Coin(NS.StopFloorCopper()) ..
@@ -768,8 +769,11 @@ function Aux.StopForWalletFloor()
         NS.Log(message)
         print('|cff66ccffForever Trader|r ' .. message)
     end
-    if Aux.IsRunning() and type(Aux.env.stop) == 'function' then Aux.env.stop() end
-    NS.Link.MarkState()
+    local wasRunning = Aux.IsRunning()
+    if wasRunning and type(Aux.env.stop) == 'function' then Aux.env.stop() end
+    -- Important: do NOT dirty the optical STATE every rendered frame while
+    -- low on gold. That would starve queued purchase/sale receipts.
+    if newlyStopped or wasRunning then NS.Link.MarkState() end
     return true
 end
 

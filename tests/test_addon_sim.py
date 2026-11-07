@@ -650,6 +650,7 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.sim.g['__money'] = 3500
         self.sim.set_commodity(LINEN, [(10, 40)])
         self.start()
+        self.sim.run(0.6)  # aux attaches after a 0.3-second AH-open timer
         self.assertTrue(self.ns.Aux.IsRunning())
         self.sim.g.SlashCmdList.FOREVERTRADER('stopat 40')
         self.assertFalse(self.ns.Aux.IsRunning())
@@ -1095,6 +1096,8 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(sum(1 for e in self.sim.ah_log() if e.startswith('start')), 1)
 
     def test_reserve_limits_a_vendor_deal(self):
+        # Legacy reserve behaviour with the separately configurable floor off.
+        self.sim.g.SlashCmdList.FOREVERTRADER('stopat off')
         self.sim.g['__money'] = 900
         self.sim.set_commodity(LINEN, [(10, 400)])
         self.start()
