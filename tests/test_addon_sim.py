@@ -936,6 +936,7 @@ class ConfirmWithRealAux(unittest.TestCase):
         # aux times the blocked attempt out; the engine then offers the deal again, for two presses.
         self.assertTrue(self.sim.run_until(lambda: self.sim.phase_is('LOST') or self.sim.phase_is('READY'), timeout=20))
         self.assertTrue(self.sim.run_until(lambda: self.sim.phase_is('READY'), timeout=30))
+        self.assertEqual(self.ns.Aux.stats.uncertainHolds, 0)
         self.sim.run(0.3)
         self.sim.press()
         self.assertTrue(self.sim.run_until(lambda: self.sim.phase_is('CONFIRMING'), timeout=5))

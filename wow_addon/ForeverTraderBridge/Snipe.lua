@@ -328,6 +328,7 @@ local function begin(deal, isRetry)
     S.qtySetAt = nil
     S.selectTries = 0
     S.failedEvent, S.boughtEvent = nil, nil
+    S.confirmBlocked = false
     if not isRetry then
         startAttempt(deal)
         S.retries = 0
@@ -349,7 +350,7 @@ local function finish(phase, message)
                 skip(S.deal, cooldown)
                 goneSkips[dealKey(S.deal)] = true
             end
-        elseif string.find(detail, 'check your mail', 1, true) then
+        elseif string.find(detail, 'check your mail', 1, true) and not S.confirmBlocked then
             -- This purchase could have gone through! Never silently offer the
             -- same item+price again a second later. Do not retry buying.
             uncertainHeld[uncertainKey(S.deal)] = GetTime() + UNCERTAIN_HOLD_SECONDS
@@ -706,6 +707,9 @@ function Snipe.OnEvent(event, ...)
     elseif event == 'ADDON_ACTION_BLOCKED' or event == 'ADDON_ACTION_FORBIDDEN' then
         local addon, func = ...
         if tostring(func):find('ConfirmCommoditiesPurchase') then
+            -- No purchase was submitted: the protected call was blocked before
+            -- transmission, so an immediate user-initiated retry is safe.
+            S.confirmBlocked = true
             -- The game wants a real press for this step too, so ask for one from now on.
             NS.Settings().autoConfirm = false
             NS.Log('auto-confirm blocked by the game; using a second press instead')
