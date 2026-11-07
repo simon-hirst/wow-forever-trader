@@ -5,6 +5,7 @@ local DEFAULTS = {
     auto = true,        -- open the Sniper and start scanning when the auction house opens
     link = true,        -- draw the data strip for the desktop app
     walletStream = false, -- optional live balance updates while away from the AH
+    autoRecover = true, -- after browse timeout, retry safely with capped backoff
     autoConfirm = true, -- confirm the server's price by itself after a real press
     bets = true,        -- offer resale bets from the plan, not only below-vendor deals
     reserve = 500,      -- copper never spent
@@ -178,6 +179,7 @@ end
 
 local function onAuctionHouseClosed()
     NS.AuctionHouseOpen = false
+    if NS.Aux.CancelBrowseRecovery then NS.Aux.CancelBrowseRecovery('auction house closed') end
     NS.Market.SessionEnd()
     if not NS.Settings().walletStream then NS.Link.Close() end
     unbindRelayKey()
@@ -306,6 +308,16 @@ SlashCmdList.FOREVERTRADER = function(input)
                 say('usage: /ft stopat <silver> (e.g. /ft stopat 30) | off')
             end
         end
+    elseif command == 'autorecover' then
+        if rest == 'on' or rest == 'off' then
+            settings.autoRecover = rest == 'on'
+            if not settings.autoRecover then NS.Aux.CancelBrowseRecovery('disabled by user') end
+        elseif rest ~= '' then
+            say('usage: /ft autorecover on|off')
+            return
+        end
+        say('auction-house auto-recovery: ' .. (settings.autoRecover and 'on' or 'off') ..
+            ' (30s, 60s, 120s, then 300s; /ft faultstats for status)')
     elseif command == 'walletstream' then
         if rest == 'on' or rest == 'off' then
             settings.walletStream = rest == 'on'
@@ -331,6 +343,8 @@ SlashCmdList.FOREVERTRADER = function(input)
         say(key .. ': ' .. (settings[key] and 'on' or 'off'))
         if key == 'link' then
             if settings.link and (NS.AuctionHouseOpen or settings.walletStream) then NS.Link.Open() elseif not settings.link then NS.Link.Stop() end
+        elseif key == 'auto' and not settings.auto then
+            NS.Aux.CancelBrowseRecovery('automatic Sniper disabled')
         elseif key == 'auto' and settings.auto and NS.Aux then
             -- Explicit manual /ft auto on is the only automatic-start latch
             -- reset after the wallet floor was reached. Cash increases do not
@@ -366,6 +380,6 @@ SlashCmdList.FOREVERTRADER = function(input)
     elseif command == 'log' then
         for _, line in ipairs((ForeverTraderBridgeDB and ForeverTraderBridgeDB.log) or {}) do print(line) end
     else
-        say('/ft diag | scanstats | pagestats | faultstats | walletstream on|off | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | stopat <silver>|off | linktest | relaytest | testplan <id> <limit> <units> | log')
+        say('/ft diag | scanstats | pagestats | faultstats | walletstream on|off | autorecover on|off | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | stopat <silver>|off | linktest | relaytest | testplan <id> <limit> <units> | log')
     end
 end

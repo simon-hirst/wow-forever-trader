@@ -692,6 +692,86 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.sim.run(12)
         self.assertEqual(self.sim.ah_log().count('browse'), first_browses)
 
+    def test_browse_timeout_retries_after_30_seconds_and_recovers(self):
+        self.ns.Settings().pages = False
+        self.sim.g['__ah'].dropBrowseAnswers = True
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 1, timeout=30))
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertGreater(self.ns.Aux.RecoveryIn(), 29)
+        first_browses = self.sim.ah_log().count('browse')
+        self.sim.run(28)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertEqual(self.sim.ah_log().count('browse'), first_browses)
+        self.sim.g['__ah'].dropBrowseAnswers = False
+        self.sim.run(3)
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.assertEqual(self.ns.Aux.stats.recoveryAttempts, 1)
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.recoverySuccesses == 1, timeout=10))
+        self.assertIn('streak 0', self.ns.Aux.FaultStats())
+
+    def test_repeated_failure_uses_longer_retry_backoff(self):
+        self.ns.Settings().pages = False
+        self.sim.g['__ah'].dropBrowseAnswers = True
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 1, timeout=30))
+        self.sim.run(31)
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 2, timeout=30))
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertGreater(self.ns.Aux.RecoveryIn(), 59)
+        self.sim.run(58)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.sim.run(3)
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.assertEqual(self.ns.Aux.stats.recoveryAttempts, 2)
+
+    def test_manual_stop_or_auction_house_close_cancels_recovery(self):
+        self.ns.Settings().pages = False
+        self.sim.g['__ah'].dropBrowseAnswers = True
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 1, timeout=30))
+        self.ns.Aux.env.stop()  # manual Stop, although auto safety already paused
+        self.assertIsNone(self.ns.Aux.RecoveryIn())
+        self.sim.run(35)
+        self.assertFalse(self.ns.Aux.IsRunning())
+        self.assertEqual(self.ns.Aux.stats.recoveryAttempts, 0)
+        self.ns.Aux.env.start()
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 2, timeout=30))
+        self.sim.g['__fire']('AUCTION_HOUSE_CLOSED')
+        self.assertIsNone(self.ns.Aux.RecoveryIn())
+        self.sim.run(65)
+        self.assertEqual(self.ns.Aux.stats.recoveryAttempts, 0)
+
+    def test_recovery_never_restarts_at_wallet_floor_or_with_auto_off(self):
+        self.ns.Settings().pages = False
+        self.sim.g['__ah'].dropBrowseAnswers = True
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 1, timeout=30))
+        self.sim.g['__money'] = 3000
+        self.sim.g['__fire']('PLAYER_MONEY')
+        self.assertTrue(self.ns.Aux.walletFloorStopped)
+        self.assertIsNone(self.ns.Aux.RecoveryIn())
+        self.sim.run(35)
+        self.assertEqual(self.ns.Aux.stats.recoveryAttempts, 0)
+        self.sim.g['__money'] = 5000
+        self.sim.g.SlashCmdList.FOREVERTRADER('auto on')
+        self.assertTrue(self.ns.Aux.IsRunning())
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.safetyStops == 2, timeout=30))
+        self.sim.g.SlashCmdList.FOREVERTRADER('autorecover off')
+        self.assertIsNone(self.ns.Aux.RecoveryIn())
+        self.sim.run(35)
+        self.assertEqual(self.ns.Aux.stats.recoveryAttempts, 0)
+
     def test_successful_browse_never_trips_safety_stop(self):
         self.ns.Settings().pages = False
         self.sim.set_commodity(LINEN, [(10, 5)])

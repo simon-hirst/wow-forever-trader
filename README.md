@@ -2,6 +2,23 @@
 
 A Windows desktop app and a WoW addon. Open the auction house and it scans the market by itself, works out what things are worth and how fast they really sell, and turns that into a set of limit orders. When something lists at or under a limit, or below what an NPC vendor pays, a **Confirm** button appears at your cursor. One press buys it.
 
+## Automatic recovery after auction-house timeouts
+
+The Sniper pauses when the AH does not answer a browse request (rather than
+continuously hammering the server). With **/ft autorecover on** (default), it
+automatically restarts after **30 seconds**, then 60, 120 and a maximum of
+300 seconds if subsequent complete browses still fail. A successful full
+browse resets the delay to 30 seconds for the next outage.
+
+- `/ft faultstats` shows the next retry countdown, retry attempts and resets.
+- `/ft autorecover off` disables/cancels the automatic retry.
+- **Manual Start/Stop**, `/ft auto off`, leaving the auction house, switching
+  away from the Sniper tab, or hitting the 30s wallet floor prevents retries.
+- No additional auction-house requests are sent while waiting; recovery only
+  uses the original auxForever Sniper.
+- A game disconnect may prevent timers from firing; recovery resumes only
+  while the WoW client is running and the auction house is open.
+
 ## Hard Sniper wallet floor (development branch)
 
 The default **30 silver** safety floor is independent of the configurable phone

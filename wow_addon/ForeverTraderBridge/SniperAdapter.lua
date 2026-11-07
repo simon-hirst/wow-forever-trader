@@ -76,28 +76,101 @@ end
 function Aux.IsCachedRefresh(deal)
     return deal and cachedRefresh[deal] == true or false
 end
+-- Server recovery uses capped exponential backoff, never overlapping scans.
+-- No additional AH request is made while paused. A successful full browse
+-- resets the sequence so the next isolated timeout starts at 30 seconds.
+local RETRY_DELAYS = {30, 60, 120, 300}
+local recoveryGeneration = 0
+local recoveryDue = nil
+local consecutiveFailures = 0
 local safetyStopScheduled = false
+local internalSafetyStop, internalRecoveryStart = false, false
+Aux.stats.recoveryAttempts = 0
+Aux.stats.recoverySuccesses = 0
+Aux.stats.recoveryCancelled = 0
 
--- The realm may keep accepting new scan rounds even when its AH has stopped
--- answering. Never spin another full browse automatically after a 20-second
--- request timeout. The player can manually restart the Sniper when it recovers.
+function Aux.RecoveryIn()
+    return recoveryDue and math.max(0, recoveryDue - GetTime()) or nil
+end
+
+function Aux.CancelBrowseRecovery(reason)
+    local hadPending = recoveryDue ~= nil or safetyStopScheduled
+    recoveryGeneration = recoveryGeneration + 1  -- invalidate all queued timers
+    recoveryDue = nil
+    safetyStopScheduled = false
+    consecutiveFailures = 0
+    if hadPending then
+        Aux.stats.recoveryCancelled = Aux.stats.recoveryCancelled + 1
+        NS.Log('auction-house auto-recovery cancelled: ' .. tostring(reason or 'manual action'))
+    end
+end
+
+function Aux.BrowseRecovered()
+    if consecutiveFailures > 0 then
+        Aux.stats.recoverySuccesses = Aux.stats.recoverySuccesses + 1
+        consecutiveFailures = 0
+        NS.Log('auction house responding again; timeout backoff reset to 30s')
+    end
+end
+
+-- Triggered only when the browse search times out. Stop once, allow the
+-- request coroutine to finish, then retry after 30s / 60s / 120s / 300s.
+-- Manual start/stop, leaving the AH, or reaching the wallet floor cancels it.
 function Aux.StopOnBrowseFailure(env, reason)
     if not env or not rawget(env, 'active') or not rawget(env, 'running')
         or safetyStopScheduled then return end
     safetyStopScheduled = true
+    consecutiveFailures = math.min(consecutiveFailures + 1, #RETRY_DELAYS)
+    local delay = RETRY_DELAYS[consecutiveFailures]
+    recoveryGeneration = recoveryGeneration + 1
+    local generation = recoveryGeneration
     Aux.stats.browseFailures = Aux.stats.browseFailures + 1
     Aux.stats.lastBrowseFailureAt = GetTime()
-    NS.Log('auction-house browse failed (' .. tostring(reason) .. '): stopping Sniper to avoid repeat timeouts')
-    -- Defer: stopping inside the scan's coroutine kills the coroutine at its
-    -- next yield. Let the original request unwind first.
+    NS.Log('auction-house browse failed (' .. tostring(reason) ..
+        '): stopping Sniper; recovery attempt in ' .. delay .. 's')
+    -- Never stop in the scan coroutine, because aux still needs to unwind.
     C_Timer.After(0, function()
+        if recoveryGeneration ~= generation then return end
         safetyStopScheduled = false
-        if Aux.env == env and rawget(env, 'running') and type(env.stop) == 'function' then
-            env.stop()
-            Aux.stats.safetyStops = Aux.stats.safetyStops + 1
-            print('|cff66ccffForever Trader|r Auction house did not answer. Sniper stopped automatically; restart it manually after the server recovers.')
-            NS.Log('sniper safety stop complete')
+        if Aux.env ~= env or not rawget(env, 'running') or type(env.stop) ~= 'function' then return end
+        internalSafetyStop = true
+        local stopped, stopError = pcall(env.stop)
+        internalSafetyStop = false
+        if not stopped then
+            NS.Log('auction-house safety stop failed: ' .. tostring(stopError))
+            return
         end
+        Aux.stats.safetyStops = Aux.stats.safetyStops + 1
+        NS.Link.MarkState()
+        if not NS.Settings().autoRecover then
+            print('|cff66ccffForever Trader|r Auction house did not answer. Sniper stopped; auto-recovery is disabled.')
+            return
+        end
+        if not NS.AuctionHouseOpen or not NS.Settings().auto or NS.WalletFloorReached()
+            or Aux.walletFloorStopped then return end
+        recoveryDue = GetTime() + delay
+        print('|cff66ccffForever Trader|r Auction house did not answer. Sniper paused; retrying in ' ..
+            delay .. 's if the auction house remains open.')
+        C_Timer.After(delay, function()
+            if recoveryGeneration ~= generation or not recoveryDue then return end
+            recoveryDue = nil
+            if Aux.env ~= env or not NS.AuctionHouseOpen or not NS.Settings().auto
+                or not NS.Settings().autoRecover or NS.WalletFloorReached()
+                or Aux.walletFloorStopped or not Aux.IsTabShown() or Aux.IsRunning() then
+                NS.Log('auction-house retry skipped: Sniper no longer eligible')
+                return
+            end
+            Aux.stats.recoveryAttempts = Aux.stats.recoveryAttempts + 1
+            internalRecoveryStart = true
+            local ok, err = pcall(Aux.StartSession)
+            internalRecoveryStart = false
+            if not ok or not Aux.IsRunning() then
+                NS.Log('auction-house retry could not start: ' .. tostring(err or 'Sniper inactive'))
+                return
+            end
+            NS.Log('auction-house retry started after ' .. delay .. 's')
+            print('|cff66ccffForever Trader|r Auction house retry started; checking server response.')
+        end)
     end)
 end
 
@@ -182,10 +255,15 @@ function Aux.GoneStats()
 end
 
 function Aux.FaultStats()
-    return string.format('browse failures %d, safety stops %d, last failure %s, stale refresh skips %d, slow preparations %d, uncertain purchase holds %d',
+    local due = Aux.RecoveryIn()
+    local status = due and string.format('next retry %.0fs', math.ceil(due)) or
+        (safetyStopScheduled and 'stopping' or 'idle')
+    return string.format('browse failures %d, safety stops %d, last failure %s, recovery %s (attempts %d, resets %d, streak %d, cancelled %d), stale refresh skips %d, slow preparations %d, uncertain purchase holds %d',
         Aux.stats.browseFailures, Aux.stats.safetyStops,
         Aux.stats.lastBrowseFailureAt and
             string.format('%.1fs ago', math.max(0, GetTime() - Aux.stats.lastBrowseFailureAt)) or 'never',
+        status, Aux.stats.recoveryAttempts, Aux.stats.recoverySuccesses,
+        consecutiveFailures, Aux.stats.recoveryCancelled,
         Aux.stats.cachedRefreshSkips, Aux.stats.prepareExpirations, Aux.stats.uncertainHolds)
 end
 
@@ -569,6 +647,23 @@ local function installHooks(env)
     local checkList = env.check_list
     Aux.checkItems = checkList
 
+    -- auxForever's Start/Stop button resolves these functions via its shared
+    -- module environment. Explicit player actions must invalidate pending
+    -- retries. Our own safety stop / timed restart are exempt.
+    local originalStop, originalStart = env.stop, env.start
+    if type(originalStop) == 'function' then
+        env.stop = function(...)
+            if not internalSafetyStop then Aux.CancelBrowseRecovery('Sniper stopped manually') end
+            return originalStop(...)
+        end
+    end
+    if type(originalStart) == 'function' then
+        env.start = function(...)
+            if not internalRecoveryStart then Aux.CancelBrowseRecovery('Sniper started manually') end
+            return originalStart(...)
+        end
+    end
+
     local originalSetDatabase = env.listing.SetDatabase
     env.listing.SetDatabase = function(self, records)
         Aux.UniqueGearSignatures(records)
@@ -655,6 +750,7 @@ local function installHooks(env)
     Aux.browseObserver = observer
 
     env.check_list = function(results, seen)
+        Aux.BrowseRecovered()
         local t0 = GetTime()
         local started = Aux.stats.roundAt or t0
         local browseSeconds = math.max(0, t0 - started)
@@ -760,6 +856,7 @@ end
 -- Opens the Sniper tab and presses Start, as the player would.
 function Aux.StopForWalletFloor()
     if not NS.WalletFloorReached() then return false end
+    if recoveryDue or safetyStopScheduled then Aux.CancelBrowseRecovery('wallet floor reached') end
     local newlyStopped = not Aux.walletFloorStopped
     if newlyStopped then
         Aux.walletFloorStopped = true
