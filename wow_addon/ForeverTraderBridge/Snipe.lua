@@ -18,9 +18,12 @@ local ARM_DELAY = 0.2       -- a click meant for something else cannot buy
 local LABEL_SETTLE = 0.12   -- aux redraws its buy bar ten times a second
 local READY_TTL = 15        -- ignored deals stop holding the Sniper's rounds
 local SKIP_SECONDS = 180
--- aux's live re-read first waits, without limit, for the server's request throttle, then
--- up to 20 seconds for the answer. Giving up sooner abandoned deals aux was about to offer.
-local PREPARE_TIMEOUT = 25
+local UNCERTAIN_HOLD_SECONDS = 120
+-- Live exports showed that 13 successful deals readied in ~0.4s, while
+-- three lost/uncertain offers waited 16-21s for a quote. Stop holding a
+-- single candidate during a stalled verification, so another item can win.
+-- This expires the *offer*, never a purchase already submitted to the AH.
+local PREPARE_TIMEOUT = 9
 local SLOW_SECONDS = 3
 local TIMEOUT_SKIP_SECONDS = 30 -- a slow answer says nothing about the deal
 -- Release the item selection quickly after completion so the next browse
@@ -35,6 +38,7 @@ local HELD_SECONDS = 24 * 60 * 60 -- a plan's unit cap counts what was bought th
 local S = {phase = PHASE.IDLE, retries = 0}
 local skipped = {}
 local goneSkips = {}
+local uncertainHeld = {} -- item+price, not just individual auction ID
 local nextChoose = 0
 
 function Snipe.ClearGoneSkips()
@@ -158,6 +162,14 @@ local function dealKey(deal)
         ':' .. tostring(deal.ft_browse_qty or '') .. ':' .. tostring(deal.auction_id or '')
 end
 
+local function uncertainKey(deal)
+    -- A timed-out purchase may still settle. Holding the exact auction ID is
+    -- insufficient if the scan recreates its record or another identical
+    -- auction appears. Only the same item at the same price is held.
+    return tostring(deal.item_id or '') .. ':' ..
+        tostring(ceil(deal.unit_buyout_price or deal.buyout_price or 0))
+end
+
 -- Units bought on a bet, per item, so the plan's unit cap holds across purchases and
 -- reloads. The engine does not know what the player holds, so the addon keeps count.
 local function heldTable()
@@ -244,6 +256,7 @@ local function chooseDeal()
     local betsOn = NS.Settings().bets
     for _, deal in ipairs(env.deals or {}) do
         if not deal.deal_gone and not deal.deal_bought and (skipped[dealKey(deal)] or 0) <= now
+            and (uncertainHeld[uncertainKey(deal)] or 0) <= now
             and (betsOn or deal.deal_reason == 'vendor')
             -- Even if the current Sniper list retains a dead listing, do not
             -- re-offer it at the cursor until its live verification cools off.
@@ -285,6 +298,7 @@ end
 local function selectDeal(deal)
     local env = NS.Aux.env
     env.update_deals()
+    if NS.Aux.ClearCachedRefresh then NS.Aux.ClearCachedRefresh(deal) end
     env.listing:SetSelectedRecord(deal)
     -- Runs aux's live re-read of the item now, so nothing stale can be bought.
     env.update_selection()
@@ -325,16 +339,24 @@ end
 
 local function finish(phase, message)
     S.message = message
-    if phase == PHASE.LOST and S.deal
-        and string.find(string.lower(tostring(message)), 'sold before you could buy', 1, true) then
-        -- The old code immediately retried this exact stale auction in the
-        -- next browse. That produced 22 identical failures in 3 minutes.
-        -- Filter *unchanged* browse records before doing another live check,
-        -- and avoid reopening the same deal in the cursor confirmation UI.
-        local cooldown = NS.Aux.ReportUnavailable and NS.Aux.ReportUnavailable(S.deal)
-        if cooldown and cooldown > 0 then
-            skip(S.deal, cooldown)
-            goneSkips[dealKey(S.deal)] = true
+    if phase == PHASE.LOST and S.deal then
+        local detail = string.lower(tostring(message or ''))
+        if string.find(detail, 'sold before you could buy', 1, true) then
+            -- A confirmed disappearance gets the ordinary dead-listing
+            -- cooldown, which can expire early if the market price changes.
+            local cooldown = NS.Aux.ReportUnavailable and NS.Aux.ReportUnavailable(S.deal)
+            if cooldown and cooldown > 0 then
+                skip(S.deal, cooldown)
+                goneSkips[dealKey(S.deal)] = true
+            end
+        elseif string.find(detail, 'check your mail', 1, true) then
+            -- This purchase could have gone through! Never silently offer the
+            -- same item+price again a second later. Do not retry buying.
+            uncertainHeld[uncertainKey(S.deal)] = GetTime() + UNCERTAIN_HOLD_SECONDS
+            skip(S.deal, UNCERTAIN_HOLD_SECONDS)
+            NS.Aux.stats.uncertainHolds = NS.Aux.stats.uncertainHolds + 1
+            NS.Log('uncertain purchase hold for ' .. tostring(S.deal.name) ..
+                ': 120s; check mail/receipts before trying this price again')
         end
     end
     setPhase(phase)
@@ -399,10 +421,24 @@ local function tickPrepare()
         finishIdle()
         return
     end
-    if GetTime() - S.phaseAt > PREPARE_TIMEOUT then
-        NS.Log('stuck ' .. tostring(deal.name) .. ': ' .. describeStuck(deal))
+    if NS.Aux.IsCachedRefresh and NS.Aux.IsCachedRefresh(deal) and not env.refreshing then
+        -- Cached-only results are not proof the listing still exists. This is
+        -- a skipped unverified offer, not an auction lost to another buyer.
+        NS.Aux.stats.cachedRefreshSkips = NS.Aux.stats.cachedRefreshSkips + 1
+        NS.Log('skipping stale cached quote for ' .. tostring(deal.name))
+        completeAttempt('EXPIRED')
         skip(deal, TIMEOUT_SKIP_SECONDS)
-        finish(PHASE.LOST, 'Could not get a live price')
+        letGo()
+        finishIdle()
+        return
+    end
+    if GetTime() - S.phaseAt > PREPARE_TIMEOUT then
+        NS.Aux.stats.prepareExpirations = NS.Aux.stats.prepareExpirations + 1
+        NS.Log('slow live verification expired ' .. tostring(deal.name) .. ': ' .. describeStuck(deal))
+        completeAttempt('EXPIRED')
+        skip(deal, TIMEOUT_SKIP_SECONDS)
+        letGo()
+        finishIdle()
         return
     end
     local selection = env.listing:GetSelection()

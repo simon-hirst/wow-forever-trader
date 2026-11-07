@@ -63,6 +63,18 @@ Aux.stats.goneChanged = 0
 Aux.stats.browseFailures = 0
 Aux.stats.safetyStops = 0
 Aux.stats.lastBrowseFailureAt = nil
+Aux.stats.cachedRefreshSkips = 0
+Aux.stats.prepareExpirations = 0
+Aux.stats.uncertainHolds = 0
+-- A freshly selected deal can still return old local AH rows without an
+-- ITEM_SEARCH_RESULTS_UPDATED event. Such a result is not a live quote.
+local cachedRefresh = setmetatable({}, {__mode='k'})
+function Aux.ClearCachedRefresh(deal)
+    if deal then cachedRefresh[deal] = nil end
+end
+function Aux.IsCachedRefresh(deal)
+    return deal and cachedRefresh[deal] == true or false
+end
 local safetyStopScheduled = false
 
 -- The realm may keep accepting new scan rounds even when its AH has stopped
@@ -169,10 +181,11 @@ function Aux.GoneStats()
 end
 
 function Aux.FaultStats()
-    return string.format('browse failures %d, safety stops %d, last failure %s',
+    return string.format('browse failures %d, safety stops %d, last failure %s, stale refresh skips %d, slow preparations %d, uncertain purchase holds %d',
         Aux.stats.browseFailures, Aux.stats.safetyStops,
         Aux.stats.lastBrowseFailureAt and
-            string.format('%.1fs ago', math.max(0, GetTime() - Aux.stats.lastBrowseFailureAt)) or 'never')
+            string.format('%.1fs ago', math.max(0, GetTime() - Aux.stats.lastBrowseFailureAt)) or 'never',
+        Aux.stats.cachedRefreshSkips, Aux.stats.prepareExpirations, Aux.stats.uncertainHolds)
 end
 
 function Aux.ItemGoneStats()
@@ -568,7 +581,14 @@ local function installHooks(env)
     local originalRequest = rawget(scanEnvironment, 'request')
     if type(originalRequest) == 'function' then
         scanEnvironment.request = function(send, events, match, cached)
+            local refreshingDeal = rawget(env, 'refreshing')
             local answer = originalRequest(send, events, match, cached)
+            if answer == true and refreshingDeal then
+                -- true is aux's cached-results fallback, not a matching AH
+                -- update event. Never promote it to a Buy-ready cursor offer.
+                cachedRefresh[refreshingDeal] = true
+                NS.Log('cached-only selected-deal verification: ' .. tostring(refreshingDeal.name))
+            end
             if type(events) == 'table' then
                 if earlyInProgress and answer == true then
                     for _, event in ipairs(events) do

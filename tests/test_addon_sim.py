@@ -965,6 +965,32 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertTrue(self.sim.run_until(lambda: self.sim.phase_is('LOST'), timeout=15))
         self.assertEqual(self.sim.bought(), [])
 
+    def test_uncertain_purchase_holds_same_item_price_after_timeout(self):
+        self.sim.g['__ah'].dropAnswers = True
+        self.sim.set_commodity(LINEN, [(10, 5)])
+        self.start()
+        self.wait_ready()
+        self.sim.press()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.sim.phase_is('LOST'), timeout=20))
+        self.assertEqual(self.ns.Aux.stats.uncertainHolds, 1)
+        self.sim.run(8)
+        self.assertFalse(self.sim.phase_is('READY'))
+        self.assertFalse(self.sim.phase_is('PREPARE'))
+        self.assertEqual(self.sim.bought(), [])
+
+    def test_cached_only_selection_does_not_reach_ready_or_purchase(self):
+        self.ns.Settings().pages = False
+        self.sim.g['__ah'].browseLatency = 0.2
+        self.sim.g['__ah'].latency = 9.0
+        self.sim.set_gear(HATCHET, [(501, 500)])
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.cachedRefreshSkips >= 1, timeout=12))
+        self.assertFalse(self.sim.phase_is('READY'))
+        self.assertEqual(self.sim.bought(), [])
+        self.assertIn('stale refresh skips 1', self.ns.Aux.FaultStats())
+
     def test_no_answer_never_buys_twice(self):
         self.sim.g['__ah'].dropAnswers = True
         self.sim.set_commodity(LINEN, [(10, 40)])
