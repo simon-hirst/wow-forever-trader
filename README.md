@@ -484,3 +484,28 @@ Auctionator recorded these **asking-price minima**, NOT proven fair values or co
 | Silverleaf | 765 | 10c | 5,815 |
 
 No purchases can be justified solely from this single snapshot: none of these numbers tells you future demand or whether the lowest stack remains. Compare a later saved scan, inspect live listings and calculate fees before buying.
+
+
+## Optional phone wallet alert (development branch)
+
+Settings → PHONE ALERTS lets you send a notification to your Android phone via
+[ntfy](https://ntfy.sh/) when your **live character money** crosses a configurable
+silver threshold (default **30 silver / 3,000 copper**).
+
+1. Install ntfy on the phone.
+2. Open **PHONE ALERTS**, choose **Generate private topic + copy**, and subscribe
+   to that exact topic in the phone's ntfy app.
+3. Turn on the alert, set the target to 30, and select **Save phone alert settings**.
+4. Use **Send test to phone** to verify delivery.
+
+The Windows desktop app must be running and receiving **live addon state frames**
+(the WoW data strip must be visible). SavedVariable balances, old scans and
+manually-entered starting cash **never trigger** the alert. Notifications fire
+once when the balance moves from **below** the threshold to **at/above** it;
+the trigger rearms if the balance falls below. Starting the app already over
+the threshold only establishes a baseline, rather than spamming the phone.
+
+This uses ntfy.sh's public push service and sends a message containing the wallet
+balance. The randomly generated topic is the access secret and must not be
+shared. Messages are sent asynchronously and use no additional auction-house
+requests. Phone alerts are **off by default**.

@@ -14,6 +14,7 @@ from . import marketdata
 from .autopilot import Autopilot, exports_dir
 from .link import LinkReceiver, set_dpi_aware
 from .overlay import ConfirmOverlay
+from .phone_alerts import WalletCrossing, generate_topic, validate_topic, threshold_copper, publish_ntfy
 
 BG='#0e1522';PANEL='#172336';PANEL2='#1d2c41';FG='#e7edf7';MUTED='#91a2bb';ACCENT='#51a9ff';GREEN='#52d1a6';ORANGE='#fbbf66';RED='#fa7185'
 
@@ -68,6 +69,15 @@ class App(tk.Tk):
         self.overlay_var=tk.BooleanVar(value=self.store.get_pref('windows_button','1')=='1')
         self.auto_export_var=tk.BooleanVar(value=self.store.get_pref('auto_export','1')=='1')
         self.link_state=None;self.link_state_at=0.0;self.last_market_files={}
+        self.phone_enabled=self.store.get_pref('phone_alert_enabled','0')=='1'
+        self.phone_threshold_silver=self.store.get_pref('phone_alert_silver','30')
+        self.phone_topic=self.store.get_pref('phone_alert_topic','')
+        self.phone_alarm=WalletCrossing()
+        self.phone_threshold=threshold_copper(self.phone_threshold_silver)
+        self.phone_enabled_var=tk.BooleanVar(value=self.phone_enabled)
+        self.phone_silver_var=tk.StringVar(value=self.phone_threshold_silver)
+        self.phone_topic_var=tk.StringVar(value=self.phone_topic)
+        self.phone_status_var=tk.StringVar(value='Disabled' if not self.phone_enabled else 'Waiting for live wallet data')
         self._style();self._build()
         if not self.source_var.get():
             candidate=find_suggested_path()
@@ -222,6 +232,7 @@ class App(tk.Tk):
             while True:
                 try:newest=self.link.states.get_nowait()
                 except queue.Empty:break
+                self._observe_wallet(newest)
             if newest:
                 self.link_state,self.link_state_at=newest,time.time()
                 self.overlay.update(newest,self._item_name(newest['item_id']) if newest['item_id'] else '',fmt_copper)
@@ -247,6 +258,72 @@ class App(tk.Tk):
         except Exception as exc:
             self.status_var.set('Link error: '+str(exc))
         self.after(50,self._poll_link)
+
+    def _observe_wallet(self, state):
+        """Only live addon frames count; saved wallet snapshots may be days old."""
+        if not self.phone_enabled or not self.phone_topic or not state.get('ah_open'):
+            return
+        if self.phone_alarm.observe(state.get('money'), self.phone_threshold):
+            money=state['money']
+            self._send_phone_alert('Wallet threshold reached',
+                f'Your WoW wallet reached {fmt_copper(money)} (target {self.phone_threshold_silver}s).')
+
+    def _send_phone_alert(self, title, message):
+        topic=self.phone_topic_var.get().strip() if title=='Forever Trader test' else self.phone_topic
+        try:validate_topic(topic)
+        except ValueError as exc:
+            self.phone_status_var.set(str(exc))
+            return
+        self.phone_status_var.set('Sending ntfy message...')
+        def worker():
+            try:
+                publish_ntfy(topic,message,title=title)
+                status='Sent to ntfy. Check your subscribed phone topic.'
+            except Exception as exc:
+                # The HTTP error can contain a private topic URL; don't display
+                # it to a UI log or an exported diagnostics bundle.
+                status=f'ntfy send failed ({type(exc).__name__}); check internet/topic'
+            try:self.after(0,lambda:self.phone_status_var.set(status))
+            except RuntimeError:pass
+        threading.Thread(target=worker,name='ft-phone-alert',daemon=True).start()
+
+    def _generate_phone_topic(self):
+        topic=generate_topic()
+        self.phone_topic_var.set(topic)
+        self.clipboard_clear()
+        self.clipboard_append(topic)
+        self.phone_status_var.set('Private topic copied. Subscribe in ntfy on your phone, then enable and save.')
+
+    def _save_phone_alerts(self):
+        try:
+            threshold=threshold_copper(self.phone_silver_var.get())
+            topic=self.phone_topic_var.get().strip()
+            if topic:validate_topic(topic)
+            if self.phone_enabled_var.get() and not topic:
+                raise ValueError('Generate a private ntfy topic before enabling phone alerts.')
+        except ValueError as exc:
+            messagebox.showerror('Phone alert settings',str(exc))
+            return
+        self.phone_enabled=self.phone_enabled_var.get()
+        self.phone_threshold=threshold
+        self.phone_threshold_silver=self.phone_silver_var.get().strip()
+        self.phone_topic=topic
+        self.phone_alarm.reset()
+        for key,value in [('phone_alert_enabled','1' if self.phone_enabled else '0'),
+                          ('phone_alert_silver',self.phone_threshold_silver),
+                          ('phone_alert_topic',self.phone_topic)]:
+            self.store.set_pref(key,value)
+        self.phone_status_var.set(
+            'Enabled; waiting for a below-to-above crossing from the live addon.' if self.phone_enabled
+            else 'Disabled. Changes saved.')
+
+    def _test_phone_alert(self):
+        try:validate_topic(self.phone_topic_var.get().strip())
+        except ValueError as exc:
+            messagebox.showerror('Phone alert settings',str(exc))
+            return
+        self._send_phone_alert('Forever Trader test',
+                               'Phone alerts are connected. You will be notified on a wallet threshold crossing.')
 
     def _update_link_status(self):
         stats=self.link.stats
@@ -626,7 +703,28 @@ class App(tk.Tk):
         self.calc_result.set(f'Projected net: {fmt_copper(net)}  |  ROI: {roi:.1f}%  |  Break-even sell: {fmt_copper(break_even)} each  |  Max buy for {target:g}% ROI: {fmt_copper(maximum_buy)} each' if roi is not None else f'Projected net: {fmt_copper(net)}  |  Break-even sell: {fmt_copper(break_even)} each  |  Max buy: {fmt_copper(maximum_buy)} each')
 
     def _settings_tab(self):
-        frame=ttk.Frame(self.settings_tab,padding=20);frame.pack(fill='both',expand=True)
+        settings_book=ttk.Notebook(self.settings_tab);settings_book.pack(fill='both',expand=True,pady=(8,0))
+        frame=ttk.Frame(settings_book,padding=20);settings_book.add(frame,text='GENERAL')
+        phone=ttk.Frame(settings_book,padding=20);settings_book.add(phone,text='PHONE ALERTS')
+        ttk.Label(phone,text='Wallet threshold push notification',font=('Segoe UI Semibold',13)).pack(anchor='w',pady=(0,12))
+        ttk.Label(phone,text='Uses the LIVE money counter from the WoW addon. No new auction-house requests.',
+                  style='Hint.TLabel',wraplength=850).pack(anchor='w',pady=(0,12))
+        ttk.Checkbutton(phone,text='Notify my phone when my wallet rises to the threshold',
+                        variable=self.phone_enabled_var).pack(anchor='w',pady=(0,12))
+        self._setting(phone,'Target silver (30 = 30s; 1g = 100s)',self.phone_silver_var)
+        self._setting(phone,'Private ntfy.sh topic',self.phone_topic_var)
+        buttons=ttk.Frame(phone);buttons.pack(anchor='w',pady=(10,12))
+        ttk.Button(buttons,text='Generate private topic + copy',command=self._generate_phone_topic).pack(side='left')
+        ttk.Button(buttons,text='Send test to phone',command=self._test_phone_alert).pack(side='left',padx=(10,0))
+        ttk.Button(phone,text='Save phone alert settings',style='Accent.TButton',command=self._save_phone_alerts).pack(anchor='w',pady=(6,12))
+        ttk.Label(phone,textvariable=self.phone_status_var,style='Hint.TLabel',wraplength=840).pack(anchor='w',pady=(0,10))
+        ttk.Label(phone,text='Setup: install the ntfy Android app, subscribe to the generated topic, then enable and save. '
+                  'An alert fires once when the LIVE wallet rises from below to at least the target; '
+                  'it rearms only after falling below again. The app must be running with the WoW data strip visible.',
+                  style='Hint.TLabel',wraplength=870).pack(anchor='w',pady=(0,10))
+        ttk.Label(phone,text='ntfy.sh is a third-party public service. Anyone who knows your topic can read messages. '
+                  'Keep your random topic private; notifications include your WoW wallet balance. '
+                  'Topic and preferences remain on your PC.',style='Hint.TLabel',wraplength=870).pack(anchor='w')
         ttk.Label(frame,text='SavedVariables input',font=('Segoe UI Semibold',13)).pack(anchor='w',pady=(0,10))
         self._setting(frame,'Auctionator.lua file',self.source_var,'Browse',self.choose_auctionator)
         self._setting(frame,'auxForever.lua (optional names)',self.aux_var,'Browse',self.choose_aux)
@@ -645,7 +743,7 @@ class App(tk.Tk):
         ttk.Button(frame,text='Save settings and scan',style='Accent.TButton',command=self.apply_settings).pack(anchor='w',pady=18)
         ttk.Label(frame,text='Example: 43s 38c = 4338 copper, reserve 5s = 500 copper.',style='Hint.TLabel').pack(anchor='w')
         ttk.Label(frame,text='Updates are checked on startup and roughly every 20 minutes; installation requires confirmation.',style='Hint.TLabel').pack(anchor='w',pady=4)
-        ttk.Label(frame,text='Nothing is uploaded. Exports stay in the exports folder on this PC.',style='Hint.TLabel').pack(anchor='w')
+        ttk.Label(frame,text='Market exports stay on your PC. Optional phone alerts send wallet notifications to ntfy.sh.',style='Hint.TLabel').pack(anchor='w')
     def _help_tab(self):
         frame=ttk.Frame(self.help_tab,padding=20);frame.pack(fill='both',expand=True)
         help_text='''HOW IT RUNS\n\nStart this app, then open the auction house in WoW. That is all.\nThe addon opens auxForever's Sniper and starts it, records the market and sends it here over the\ncolour strip at the top of the game window. Keep that strip visible. No /reload is needed.\nThe STRATEGY tab reruns as data arrives. An export ZIP is written every 15 minutes when there is\nnew data, and a Claude Code chat open on this PC can review them (type /ft-review).\n\nTHE CONFIRM BUTTON\n\nA deal puts a Confirm button at your cursor. One press buys every unit of a stackable item under\nthe limit. Gear takes one press per auction, because the game requires it. A mouse-wheel notch\nover the button counts as a press too. Right-click skips the deal.\nBelow-vendor deals may use all your cash except the reserve. Other deals get a quarter of free\ncash at most, and the plan's unit cap.\nIf your cursor is outside WoW, a Windows button appears instead. Each click sends one key press.\n\nIn game: /ft diag shows what is working. /ft for all commands.\n\nOLDER SIGNALS\n\nBASELINE: first observation; do not treat it as a deal.\nWATCH: has price history but not a sufficiently strong discount.\nRECHECK: current minimum at least 20% below prior scan median and fits bankroll.\n\nYou can rename unidentified IDs in MARKET. Price targets alert on a NEW snapshot.\nEvery listed price is an observed minimum, not a live executable order.\nORDER BOOK shows actual price tiers from searches you performed, but never transactions.\nINSPECT requires fresh, complete commodity results, thin cheapest tier, and bankroll fit.\nPrices are scenarios, not fair values. Individual stack auctions require manual evaluation.\nAuctionator does not reveal completed sales. This app cannot know actual sell-through.\nMultiple scans on the same day may be merged by Auctionator's own daily buckets,\nbut the app separately saves snapshots after every changed SavedVariables write.\n\nTRADING\n\nRecord manual buys and sells to track holdings and estimated after-fee realised P&L.\nAlways double-check the posted stack sizes and deposit before buying/relisting.\nThe default faction AH sales fee assumption is 5%.\nNever buy solely from the app's signal: check the listing in WoW.\n\nUPDATES\n\nThe app checks GitHub Releases for a newer version and asks before installing it.\n'''
