@@ -96,6 +96,28 @@ class SniperSpeedAndPriority(unittest.TestCase):
         self.sim.run(46)
         self.assertFalse(self.aux.IsGoneCooldown('8178:10:14321:0', 100, 2000))
 
+    def test_recent_early_rechecks_do_not_reset_on_quantity_churn(self):
+        self.aux.NoteEarlyCheck('8178:0', 100, False, 1)
+        self.assertTrue(self.aux.IsRecentEarly('8178:0', 100, 20))
+        self.assertFalse(self.aux.IsRecentEarly('8178:0', 99, 20))
+        self.assertFalse(self.aux.IsRecentEarly('8178:0', 100, 37))
+        # A checked bid-only listing gets a longer rest; quantity is intentionally
+        # not part of its fingerprint.
+        self.aux.NoteEarlyCheck('8178:0', 100, True, 40)
+        self.assertTrue(self.aux.IsRecentEarly('8178:0', 100, 159))
+        self.assertFalse(self.aux.IsRecentEarly('8178:0', 100, 160))
+
+    def test_purchase_clears_same_price_caches_without_changing_other_items(self):
+        self.aux.NoteEarlyCheck('8178:0', 100, True, 2)
+        self.aux.NoteEarlyCheck('5071:0', 100, True, 2)
+        deal = self.sim.lua.table(deal_key='8178:0', item_id=8178, buyout_price=100)
+        self.aux.ReportUnavailable(deal)
+        self.assertTrue(self.aux.IsGoneCooldown('8178:0', 100, 1))
+        self.aux.OnPurchased(deal)
+        self.assertFalse(self.aux.IsRecentEarly('8178:0', 100, 3))
+        self.assertFalse(self.aux.IsGoneCooldown('8178:0', 100, 1))
+        self.assertTrue(self.aux.IsRecentEarly('5071:0', 100, 3))
+
     def test_deadcache_kill_switch_immediately_reenables_stale_candidates(self):
         deal=self.sim.lua.table(deal_key='8178:0',unit_buyout_price=100,
                                 ft_browse_price=100,ft_browse_qty=1)
@@ -710,6 +732,17 @@ class ConfirmWithRealAux(unittest.TestCase):
         self.assertEqual(len(self.sim.bought()), 1)
         self.assertEqual(self.sim.bought()[0]['id'], HATCHET)
         self.assertEqual(self.sim.violations(), [])
+
+    def test_one_slow_early_verification_falls_back_to_normal_browse(self):
+        self._set_paged_market()
+        self.sim.g['__ah'].latency = 9.0
+        self.start()
+        self.assertTrue(self.sim.run_until(
+            lambda: self.ns.Aux.stats.earlySlowFallbacks >= 1, timeout=20))
+        self.assertFalse(self.ns.Aux.PagesOn())
+        self.assertEqual(self.ns.Aux.stats.earlyChecks, 1)
+        self.assertIn('slow fallbacks 1', self.ns.Aux.PreviewStats())
+        self.assertEqual(self.sim.bought(), [])
 
     def test_browse_cache_invalidation_safely_disables_incremental_search(self):
         self._set_paged_market()

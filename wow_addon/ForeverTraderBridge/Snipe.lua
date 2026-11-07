@@ -501,6 +501,7 @@ local function tickBuying()
         if deal.commodity and deal.deal_reason ~= 'vendor' then Snipe.AddHeld(deal.item_id, S.n or 0) end
         NS.Log(string.format('bought %s x %d for %s', deal.name or '?', S.n or 0, coin(S.cost or 0)))
         finish(PHASE.DONE, 'Bought ' .. (S.n or 0) .. ' x ' .. (deal.name or '?') .. ' for ' .. coin(S.cost or 0))
+        if NS.Aux.OnPurchased then NS.Aux.OnPurchased(deal) end
         NS.Aux.RecheckItem(deal.name)
     elseif GetTime() - S.phaseAt > NO_ANSWER_SECONDS then
         -- It may still go through on a slow server, so never buy again automatically.

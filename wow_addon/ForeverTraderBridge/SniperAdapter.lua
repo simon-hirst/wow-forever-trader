@@ -25,8 +25,10 @@ local EARLY_PER_PAGE = 1
 local EARLY_PER_ROUND = 4
 local EARLY_MIN_PROFIT = 1   -- respect auxForever's actual per-item minimum
 local EARLY_RECHECK_SECONDS = 35
+local EARLY_NO_DEAL_RECHECK_SECONDS = 120
+local EARLY_SLOW_SECONDS = 8
 local earlySeen = {}         -- this round: item key -> last browse minPrice
-local earlyRecent = {}       -- across rounds: item key -> price/quantity/time
+local earlyRecent = {}       -- across rounds: item key -> price/result/time
 local earlyInProgress = false
 local earlySessionDisabled = false
 -- The live export contained 22 failed Training Sword attempts at the same
@@ -189,6 +191,69 @@ Aux.stats.earlySpent = 0
 Aux.stats.earlyFirst = 0
 Aux.stats.lastEarlyFirst = 0  -- persist last result across subsequent rounds
 Aux.stats.earlyRoundChecks = 0
+Aux.stats.earlyRepeatSkips = 0
+Aux.stats.earlySlowFallbacks = 0
+Aux.stats.earlySlowSeconds = 0
+Aux.stats.earlyVerifiedNoDeal = 0
+Aux.stats.cachePruned = 0
+
+-- The browse quantity covers *all* auctions for an item, including other
+-- enchantments and bids. Quantity churn alone is not proof a cheap BUYOUT
+-- appeared. A changed minimum price is always eligible immediately.
+function Aux.IsRecentEarly(key, price, now)
+    local prev = earlyRecent[tostring(key or '')]
+    if not prev or prev.price ~= tonumber(price) then return false end
+    local seconds = prev.noDeal and EARLY_NO_DEAL_RECHECK_SECONDS or EARLY_RECHECK_SECONDS
+    return (now or GetTime()) - prev.at < seconds
+end
+
+function Aux.NoteEarlyCheck(key, price, noDeal, now)
+    earlyRecent[tostring(key or '')] = {
+        price = tonumber(price), at = now or GetTime(), noDeal = noDeal == true,
+    }
+end
+
+-- A successful buy proves the price was real, and more units may be available.
+-- Let the normal Sniper inspect another offer at the same price immediately.
+function Aux.OnPurchased(deal)
+    if not deal then return end
+    local key = tostring(deal.deal_key or '')
+    if key ~= '' then
+        earlyRecent[key] = nil
+        goneCache[key] = nil
+        if Aux.env and Aux.env.known then Aux.env.known[key] = nil end
+    end
+    local id = tonumber(deal.item_id)
+    local price = tonumber(deal.ft_browse_price or deal.buyout_price or deal.unit_buyout_price)
+    if id and price and price > 0 then
+        itemGoneCache[tostring(id) .. ':' .. tostring(price)] = nil
+    end
+end
+
+local nextPruneAt = 120
+function Aux.PruneCaches(now)
+    now = now or GetTime()
+    if now < nextPruneAt then return end
+    nextPruneAt = now + 120
+    for key, old in pairs(earlyRecent) do
+        if now - old.at > 300 then
+            earlyRecent[key] = nil
+            Aux.stats.cachePruned = Aux.stats.cachePruned + 1
+        end
+    end
+    for key, old in pairs(goneCache) do
+        if now - old.reportedAt > 900 then
+            goneCache[key] = nil
+            Aux.stats.cachePruned = Aux.stats.cachePruned + 1
+        end
+    end
+    for key, old in pairs(itemGoneCache) do
+        if now - old.reportedAt > 900 then
+            itemGoneCache[key] = nil
+            Aux.stats.cachePruned = Aux.stats.cachePruned + 1
+        end
+    end
+end
 
 function Aux.PagesOn()
     return NS.Settings().pages ~= false and not earlySessionDisabled
@@ -214,9 +279,10 @@ local function earlyPotential(row, now)
         return
     end
     if earlySeen[keyStr] == price then return end
-    local prev = earlyRecent[keyStr]
-    if prev and prev.price == price and prev.qty == qty
-        and now - prev.at < EARLY_RECHECK_SECONDS then return end
+    if Aux.IsRecentEarly(keyStr, price, now) then
+        Aux.stats.earlyRepeatSkips = Aux.stats.earlyRepeatSkips + 1
+        return
+    end
     local name, quality, vendor
     local ok, a, _, c, _, _, _, _, _, _, _, v = pcall(NS.GetItemInfo, id)
     if ok then name, quality, vendor = a, c, v end
@@ -260,7 +326,7 @@ function Aux.PreviewBrowsePage()
         -- Mark before the yielding search. If it is interrupted by a user
         -- purchase, the candidate cannot be reissued from this same page.
         earlySeen[c.keyStr] = c.price
-        earlyRecent[c.keyStr] = {price = c.price, qty = c.qty, at = now}
+        Aux.NoteEarlyCheck(c.keyStr, c.price, false, now)
         Aux.stats.earlyRoundChecks = Aux.stats.earlyRoundChecks + 1
         Aux.stats.earlyChecks = Aux.stats.earlyChecks + 1
         if not Aux.stats.earlyFirst or Aux.stats.earlyFirst == 0 then
@@ -276,7 +342,18 @@ function Aux.PreviewBrowsePage()
         local t0 = GetTime()
         -- MUST NOT call through pcall: scan.read_item yields on Lua 5.1.
         Aux.env.check_item(c.row.itemKey, c.keyStr, c.price)
-        Aux.stats.earlySpent = Aux.stats.earlySpent + GetTime() - t0
+        local spent = math.max(0, GetTime() - t0)
+        Aux.stats.earlySpent = Aux.stats.earlySpent + spent
+        -- A slow item query is a bad time to interrupt the browse between
+        -- pages. Fall back to aux's ordinary scan for the rest of the session,
+        -- without cancelling a valid deal found by this completed query.
+        if spent >= EARLY_SLOW_SECONDS and not earlySessionDisabled then
+            earlySessionDisabled = true
+            Aux.stats.earlySlowFallbacks = Aux.stats.earlySlowFallbacks + 1
+            Aux.stats.earlySlowSeconds = spent
+            NS.Log(string.format('early checks disabled for session: one live verification took %.1fs (limit %ds)',
+                spent, EARLY_SLOW_SECONDS))
+        end
         local newDeal
         for _, deal in ipairs(Aux.env.deals) do
             if deal.deal_key == c.keyStr then newDeal = deal; break end
@@ -297,7 +374,14 @@ function Aux.PreviewBrowsePage()
             break -- an actionable deal takes precedence over pagination
         else
             Aux.stats.earlyMisses = Aux.stats.earlyMisses + 1
+            -- aux marks the price as known ONLY when its item search answered.
+            -- Do not apply a long negative cache to timeouts or dropped queries.
+            if Aux.env.known and Aux.env.known[c.keyStr] == c.price then
+                Aux.NoteEarlyCheck(c.keyStr, c.price, true, GetTime())
+                Aux.stats.earlyVerifiedNoDeal = Aux.stats.earlyVerifiedNoDeal + 1
+            end
         end
+        if earlySessionDisabled then break end
     end
     earlyInProgress = false
     -- If the client replaced the browse cache while searching, bail out of
@@ -314,12 +398,13 @@ end
 function Aux.PreviewStats()
     local s = Aux.stats
     local minProfit = math.max(EARLY_MIN_PROFIT, tonumber(Aux.module and Aux.module.account_data.sniper_profit) or 0)
-    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (item-prices %d, early skips %d, full skips %d)',
+    return string.format('pages %s%s, deadcache %s, min %dc, checks %d (this round %d), verified %d, unverified %d, search %.1fs, first %.1fs, dead %d (item-prices %d, early skips %d, full skips %d), repeat skips %d, verified no-deal %d, slow fallbacks %d (%.1fs)',
         Aux.PagesOn() and 'on' or 'off', earlySessionDisabled and ' (fallback)' or '',
         Aux.DeadCacheOn() and 'on' or 'off', minProfit,
         s.earlyChecks, s.earlyRoundChecks, s.earlyDeals, s.earlyMisses,
         s.earlySpent, s.lastEarlyFirst, Aux.GoneStats(),
-        Aux.ItemGoneStats(), s.goneFilteredEarly, s.goneFilteredFull)
+        Aux.ItemGoneStats(), s.goneFilteredEarly, s.goneFilteredFull,
+        s.earlyRepeatSkips, s.earlyVerifiedNoDeal, s.earlySlowFallbacks, s.earlySlowSeconds)
 end
 
 
@@ -498,6 +583,7 @@ local function installHooks(env)
 
     local startRound = env.start_round
     env.start_round = function(...)
+        Aux.PruneCaches(GetTime())
         Aux.stats.roundAt = GetTime()
         Aux.stats.started = Aux.stats.started + 1
         Aux.stats.earlyRoundChecks = 0
