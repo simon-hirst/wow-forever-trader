@@ -261,7 +261,7 @@ class App(tk.Tk):
 
     def _observe_wallet(self, state):
         """Only live addon frames count; saved wallet snapshots may be days old."""
-        if not self.phone_enabled or not self.phone_topic or not state.get('ah_open'):
+        if not self.phone_enabled or not self.phone_topic:
             return
         if self.phone_alarm.observe(state.get('money'), self.phone_threshold):
             money=state['money']
@@ -718,9 +718,10 @@ class App(tk.Tk):
         ttk.Button(buttons,text='Send test to phone',command=self._test_phone_alert).pack(side='left',padx=(10,0))
         ttk.Button(phone,text='Save phone alert settings',style='Accent.TButton',command=self._save_phone_alerts).pack(anchor='w',pady=(6,12))
         ttk.Label(phone,textvariable=self.phone_status_var,style='Hint.TLabel',wraplength=840).pack(anchor='w',pady=(0,10))
-        ttk.Label(phone,text='Setup: install the ntfy Android app, subscribe to the generated topic, then enable and save. '
-                  'An alert fires once when the LIVE wallet rises from below to at least the target; '
-                  'it rearms only after falling below again. The app must be running with the WoW data strip visible.',
+        ttk.Label(phone,text='Setup: install ntfy on Android, subscribe to the generated topic, then enable and save. '
+                  'In WoW, use /ft walletstream on to receive balance updates outside the auction house too. '
+                  'An alert fires once on a crossing from below to the target and rearms below it. '
+                  'The app must be running with the WoW data strip visible.',
                   style='Hint.TLabel',wraplength=870).pack(anchor='w',pady=(0,10))
         ttk.Label(phone,text='ntfy.sh is a third-party public service. Anyone who knows your topic can read messages. '
                   'Keep your random topic private; notifications include your WoW wallet balance. '

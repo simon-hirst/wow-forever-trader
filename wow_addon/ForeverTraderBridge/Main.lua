@@ -4,6 +4,7 @@ local _, NS = ...
 local DEFAULTS = {
     auto = true,        -- open the Sniper and start scanning when the auction house opens
     link = true,        -- draw the data strip for the desktop app
+    walletStream = false, -- optional live balance updates while away from the AH
     autoConfirm = true, -- confirm the server's price by itself after a real press
     bets = true,        -- offer resale bets from the plan, not only below-vendor deals
     reserve = 500,      -- copper never spent
@@ -150,13 +151,13 @@ end
 local function onAuctionHouseClosed()
     NS.AuctionHouseOpen = false
     NS.Market.SessionEnd()
-    NS.Link.Close()
+    if not NS.Settings().walletStream then NS.Link.Close() end
     unbindRelayKey()
 end
 
 local events = CreateFrame('Frame')
 for _, event in ipairs({
-    'ADDON_LOADED', 'PLAYER_LOGIN', 'AUCTION_HOUSE_SHOW', 'AUCTION_HOUSE_CLOSED', 'REPLICATE_ITEM_LIST_UPDATE',
+    'ADDON_LOADED', 'PLAYER_LOGIN', 'PLAYER_MONEY', 'AUCTION_HOUSE_SHOW', 'AUCTION_HOUSE_CLOSED', 'REPLICATE_ITEM_LIST_UPDATE',
     'COMMODITY_PRICE_UPDATED', 'COMMODITY_PURCHASE_SUCCEEDED', 'COMMODITY_PURCHASE_FAILED', 'AUCTION_HOUSE_SHOW_ERROR',
     'ADDON_ACTION_BLOCKED', 'ADDON_ACTION_FORBIDDEN',
 }) do
@@ -170,6 +171,10 @@ events:SetScript('OnEvent', function(_, event, ...)
         end
     elseif event == 'PLAYER_LOGIN' then
         NS.Plan.LoadNext()
+        if NS.Settings().walletStream then NS.Link.Open() end
+    elseif event == 'PLAYER_MONEY' then
+        -- Wallet change only: update the existing coloured strip. No AH request.
+        NS.Link.MarkState()
     elseif event == 'AUCTION_HOUSE_SHOW' then
         onAuctionHouseShow()
     elseif event == 'AUCTION_HOUSE_CLOSED' then
@@ -249,6 +254,18 @@ SlashCmdList.FOREVERTRADER = function(input)
         else
             say('usage: /ft deadcache on|off')
         end
+    elseif command == 'walletstream' then
+        if rest == 'on' or rest == 'off' then
+            settings.walletStream = rest == 'on'
+            if settings.walletStream or NS.AuctionHouseOpen then
+                NS.Link.Open()
+            else
+                NS.Link.Close()
+            end
+            say('live wallet stream outside AH: ' .. (settings.walletStream and 'on' or 'off'))
+        else
+            say('usage: /ft walletstream on|off')
+        end
     elseif command == 'speed' then
         if NS.Aux.SetSpeed(rest) then
             say('scan cooldown: ' .. NS.Aux.Speed() ..
@@ -261,7 +278,7 @@ SlashCmdList.FOREVERTRADER = function(input)
         settings[key] = rest == 'on' or (rest ~= 'off' and not settings[key])
         say(key .. ': ' .. (settings[key] and 'on' or 'off'))
         if key == 'link' then
-            if settings.link and NS.AuctionHouseOpen then NS.Link.Open() elseif not settings.link then NS.Link.Stop() end
+            if settings.link and (NS.AuctionHouseOpen or settings.walletStream) then NS.Link.Open() elseif not settings.link then NS.Link.Stop() end
         end
     elseif command == 'reserve' then
         local copper = tonumber(rest)
@@ -291,6 +308,6 @@ SlashCmdList.FOREVERTRADER = function(input)
     elseif command == 'log' then
         for _, line in ipairs((ForeverTraderBridgeDB and ForeverTraderBridgeDB.log) or {}) do print(line) end
     else
-        say('/ft diag | scanstats | pagestats | faultstats | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
+        say('/ft diag | scanstats | pagestats | faultstats | walletstream on|off | pages on|off | deadcache on|off | speed fast|normal|safe | auto [on|off] | link [on|off] | autoconfirm [on|off] | bets [on|off] | reserve <copper> | linktest | relaytest | testplan <id> <limit> <units> | log')
     end
 end

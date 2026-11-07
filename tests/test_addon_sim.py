@@ -527,6 +527,38 @@ class LinkReceiptPriority(unittest.TestCase):
         self.assertEqual(self.link.urgentSent,1)
         self.assertEqual(self.link.droppedUrgent,0)
 
+@unittest.skipUnless(HAVE_LUA, 'needs lupa')
+class WalletStreamWhenAwayFromAuctionHouse(unittest.TestCase):
+    def setUp(self):
+        self.sim=WowSim()
+        self.sim.set_items(ITEMS)
+        self.sim.load_bridge()
+        self.sim.login()
+
+    def test_walletstream_is_opt_in_and_keeps_state_frames_active(self):
+        link=self.sim.bridge_ns.Link
+        self.assertFalse(link.IsActive())
+        self.sim.g.SlashCmdList.FOREVERTRADER('walletstream on')
+        self.assertTrue(link.IsActive())
+        self.sim.run(1)
+        first=link.sent
+        self.assertGreater(first,0)
+        self.sim.g['__money']=3000
+        self.sim.g['__fire']('PLAYER_MONEY')
+        self.sim.run(0.8)
+        self.assertGreater(link.sent,first)
+        self.assertEqual(self.sim.ah_log(),[])  # no AH traffic from wallet streaming
+        self.sim.g.SlashCmdList.FOREVERTRADER('walletstream off')
+        self.sim.run(2)
+        self.assertFalse(link.IsActive())
+
+    def test_enabled_walletstream_survives_auction_house_closing(self):
+        link=self.sim.bridge_ns.Link
+        self.sim.g.SlashCmdList.FOREVERTRADER('walletstream on')
+        self.sim.g['__fire']('AUCTION_HOUSE_SHOW')
+        self.sim.g['__fire']('AUCTION_HOUSE_CLOSED')
+        self.assertTrue(link.IsActive())
+
 @unittest.skipUnless(HAVE_LUA and find_aux(), 'needs lupa and an installed auxForever')
 class ConfirmWithRealAux(unittest.TestCase):
     def setUp(self):

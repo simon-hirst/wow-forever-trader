@@ -499,8 +499,11 @@ silver threshold (default **30 silver / 3,000 copper**).
 4. Use **Send test to phone** to verify delivery.
 
 The Windows desktop app must be running and receiving **live addon state frames**
-(the WoW data strip must be visible). SavedVariable balances, old scans and
-manually-entered starting cash **never trigger** the alert. Notifications fire
+(the WoW data strip must be visible). Use **/ft walletstream on** in WoW to
+keep live money updates flowing when the auction house is closed, including at
+NPC vendors. It is optional and leaves the 768x3 pixel strip visible during
+normal gameplay. **/ft walletstream off** restores AH-only operation.
+SavedVariable balances, old scans and manually-entered starting cash **never trigger** the alert. Notifications fire
 once when the balance moves from **below** the threshold to **at/above** it;
 the trigger rearms if the balance falls below. Starting the app already over
 the threshold only establishes a baseline, rather than spamming the phone.
